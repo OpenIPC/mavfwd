@@ -33,7 +33,7 @@ int out_sock;
 
 static void print_usage()
 {
-	printf("Usage: mavproxy [OPTIONS]\n"
+	printf("Usage: mavfwd [OPTIONS]\n"
 	       "Where:\n"
 	       "  --master        Local MAVLink master port (%s by default)\n"
 	       "  --baudrate      Serial port baudrate (%d by default)\n"
