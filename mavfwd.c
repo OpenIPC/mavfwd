@@ -149,19 +149,21 @@ static size_t until_first_fe(unsigned char *data, size_t len)
 	}
 	return len;
 }
-
+static long ttl_packets=0;
+static long ttl_bytes=0;
 static void serial_read_cb(struct bufferevent *bev, void *arg)
 {
 	struct evbuffer *input = bufferevent_get_input(bev);
 	int packet_len, in_len;
-	struct event_base *base = arg;
+	struct event_base *base = arg;	
 
 	while ((in_len = evbuffer_get_length(input))) {
 		unsigned char *data = evbuffer_pullup(input, in_len);
 		if (data == NULL) {
 			return;
 		}
-
+		packet_len = in_len;
+/*
 		// find first 0xFE and skip everything before it
 		if (*data != 0xFE) {
 			int bad_len = until_first_fe(data, in_len);
@@ -175,6 +177,11 @@ static void serial_read_cb(struct bufferevent *bev, void *arg)
 			return;
 
 		// TODO: check CRC correctness and skip bad packets
+*/
+		ttl_packets++;
+		ttl_bytes+=packet_len;
+		if (ttl_packets%10==1)
+			printf("Packets:%d  Bytes:%d\n",ttl_packets,ttl_bytes);
 
 		if (sendto(out_sock, data, packet_len, 0,
 			   (struct sockaddr *)&sin_out,
@@ -312,6 +319,8 @@ err:
 
 	return ret;
 }
+
+//COMPILE : gcc -o program mavfwd.c -levent -levent_core
 
 int main(int argc, char **argv)
 {
