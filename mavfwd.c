@@ -57,6 +57,16 @@ static speed_t speed_by_value(int baudrate)
 		return B57600;
 	case 115200:
 		return B115200;
+	case 230400:
+		return B230400;
+	case 460800:
+		return B460800;
+	case 500000:
+		return B500000;
+	case 921600:
+		return B921600;
+	case 1500000:
+		return B1500000;
 	default:
 		printf("Not implemented baudrate %d\n", baudrate);
 		exit(EXIT_FAILURE);
@@ -111,6 +121,7 @@ static void dump_mavlink_packet(unsigned char *data, const char *direction)
 
 	printf("%s sender %d/%d\t%d\t%d\n", direction, sys_id, comp_id, seq,
 	       msg_id);
+	
 }
 
 /* https://discuss.ardupilot.org/uploads/short-url/vS0JJd3BQfN9uF4DkY7bAeb6Svd.pdf
