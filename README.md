@@ -1,7 +1,7 @@
 ## MAVFWD
 
 mavfwd is a utility for broadcasting a mavlink telemetry stream between wifibroadcast and uart devices, for organizing one- or two-way telemetry between UAV and ground station. mavfwd is included in the OpenIPC FPV firmware as a lighter alternative to mavlink routerd and is usually used on the air part (camera).
-Also, mavfwd can monitor the mavlink RC _CHANNELS package starting from the 5th and on the specified channel, and call the script `/root/channels.sh` passing the channel number and its value to it when changing as $1 and $2 parameters. An example of channels.sh is present.
+Also, mavfwd can monitor the mavlink RC _CHANNELS package starting from the 5th and on the specified channel, and call the script `/usr/sbin/channels.sh` passing the channel number and its value to it when changing as $1 and $2 parameters. An example of channels.sh is present.
 ```
 Usage: mavfwd [OPTIONS]
 Where:
