@@ -3,9 +3,9 @@ echo $1 $2 >>/tmp/channels.log
 #channel 5
 if [ $1 -eq 5 ]; then
     if [ $2 -lt 1600 ]; then
-      /root/1080.sh
+      1080.sh
     else
-      /root/720.sh
+      720.sh
     fi
 fi
 
@@ -13,9 +13,9 @@ fi
 #channel 6
 if [ $1 -eq 6 ]; then
     if [ $2 -lt 1600 ]; then
-      /root/ircut.sh off
+      ircut.sh off
     else
-      /root/ircut.sh on
+      ircut.sh on
     fi
 fi
 
