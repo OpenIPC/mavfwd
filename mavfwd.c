@@ -150,9 +150,9 @@ static void dump_mavlink_packet(unsigned char *data, const char *direction)
           if(ch[i] != val) {
               ch[i] = val;
               char buff[44];
-              sprintf(buff, "/root/channels.sh %d %d &", i+5, val);
+              sprintf(buff, "/usr/sbin/channels.sh %d %d &", i+5, val);
               system(buff);
-              if (verbose) printf("called /root/channels.sh %d %d\n", i+5, val);
+              if (verbose) printf("called /usr/sbin/channels.sh %d %d\n", i+5, val);
            }
       offset = offset + 2;
 	    } //for
