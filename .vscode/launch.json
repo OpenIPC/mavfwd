@@ -1,0 +1,38 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "C Debug",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/mavfwd",
+            "args": [
+                "--master",
+                "/dev/ttyUSB0",
+                "--baudrate",
+                "115200",
+                "--out",
+                "127.0.0.1:14550",
+                "--in",
+                "127.0.0.1:14551"
+            ],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "miDebuggerPath": "/usr/bin/gdb",
+            "setupCommands": [
+                {
+                    "description": "MAVLINk gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ],
+            "preLaunchTask": "gcc build",
+            "linux": {
+                "preLaunchTask": "gcc build"
+            }
+        }
+    ]
+}
