@@ -143,7 +143,8 @@ static void dump_mavlink_packet(unsigned char *data, const char *direction)
   uint16_t val;
   
 	//RC_CHANNELS ( #65 ) hook
-	if(msg_id == 65 && ch_count > 0) {
+	//RC_CHANNELS_RAW ( #35 ) for ExpressLRS,Crossfire and other RC procotols 
+	if((msg_id == 65 || msg_id == 35) && ch_count > 0) {
       uint8_t offset = 18; //15 = 1ch;
       for(uint8_t i=0; i < ch_count; i++) {
           val = data[offset] | (data[offset+1] << 8);
