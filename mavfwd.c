@@ -26,6 +26,8 @@ const char *default_master = "/dev/ttyAMA0";
 const int default_baudrate = 115200;
 const char *defualt_out_addr = "127.0.0.1:14600";
 const char *default_in_addr = "127.0.0.1:14601";
+const int RC_CHANNELS = 65; //RC_CHANNELS ( #65 ) for regular MAVLINK RC Channels read (https://mavlink.io/en/messages/common.html#RC_CHANNELS)
+const int RC_CHANNELS_RAW = 35; //RC_CHANNELS_RAW ( #35 ) for ExpressLRS,Crossfire and other RC procotols (https://mavlink.io/en/messages/common.html#RC_CHANNELS_RAW)
 
 uint8_t ch_count = 0;
 uint16_t ch[14];
@@ -142,9 +144,7 @@ static void dump_mavlink_packet(unsigned char *data, const char *direction)
   
   uint16_t val;
   
-	//RC_CHANNELS ( #65 ) hook
-	//RC_CHANNELS_RAW ( #35 ) for ExpressLRS,Crossfire and other RC procotols 
-	if((msg_id == 65 || msg_id == 35) && ch_count > 0) {
+	if((msg_id == RC_CHANNELS || msg_id == RC_CHANNELS_RAW ) && ch_count > 0) {
       uint8_t offset = 18; //15 = 1ch;
       for(uint8_t i=0; i < ch_count; i++) {
           val = data[offset] | (data[offset+1] << 8);
