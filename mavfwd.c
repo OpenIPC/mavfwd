@@ -178,6 +178,7 @@ static void serial_read_cb(struct bufferevent *bev, void *arg)
 
 		// TODO: check CRC correctness and skip bad packets
 */
+//Simply forward all serial input to UDP.
 		ttl_packets++;
 		ttl_bytes+=packet_len;
 		if (ttl_packets%10==1)
