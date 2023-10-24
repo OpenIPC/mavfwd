@@ -1,3 +1,8 @@
 {
-    "workbench.colorTheme": "Default High Contrast"
+    "workbench.colorTheme": "Default High Contrast",
+    "files.associations": {
+        "mavlink.h": "c",
+        "system_error": "c",
+        "chrono": "c"
+    }
 }

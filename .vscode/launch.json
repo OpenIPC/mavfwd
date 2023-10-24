@@ -1,6 +1,7 @@
 {
     "version": "0.2.0",
     "configurations": [
+
         {
             "name": "C Debug",
             "type": "cppdbg",
@@ -14,7 +15,10 @@
                 "--out",
                 "127.0.0.1:14550",
                 "--in",
-                "127.0.0.1:14551"
+                "127.0.0.1:14551",
+                "--c",
+                "2",
+                "--v"
             ],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",

@@ -18,6 +18,8 @@
 #include <event2/buffer.h>
 #include <event2/bufferevent.h>
 
+#include "mavlink/common/mavlink.h"
+
 #define MAX_MTU 9000
 
 const char *default_master = "/dev/ttyAMA0";
@@ -30,6 +32,9 @@ struct sockaddr_in sin_out = {
 	.sin_family = AF_INET,
 };
 int out_sock;
+
+uint8_t ch_count = 0;
+bool verbose = false;
 
 static void print_usage()
 {
@@ -149,6 +154,171 @@ static size_t until_first_fe(unsigned char *data, size_t len)
 	}
 	return len;
 }
+
+
+bool version_shown=false;
+static void ShowVersionOnce(mavlink_message_t* msg, uint8_t header){
+	if (version_shown)
+		return;
+	version_shown=true;
+/*
+The major version can be determined from the packet start marker byte:
+MAVLink 1: 0xFE
+MAVLink 2: 0xFD
+*/
+	if (header==0xFE)
+		printf("MAVLink version: 1.0\n");
+	if (header==0xFD)
+		printf("MAVLink version: 2.0\n");
+
+	  //if (msg->magic == MAVLINK_STX)             
+    printf("Magic : %d  \n",msg->magic);
+   
+}
+bool fc_shown=false;
+void handle_heartbeat(const mavlink_message_t* message)
+{
+	if (fc_shown)
+		return;
+    fc_shown=true;
+
+    mavlink_heartbeat_t heartbeat;
+    mavlink_msg_heartbeat_decode(message, &heartbeat);
+
+    printf("Flight Controller Type :");
+    switch (heartbeat.autopilot) {
+        case MAV_AUTOPILOT_GENERIC:
+            printf("generic");
+            break;
+        case MAV_AUTOPILOT_ARDUPILOTMEGA:
+            printf("ArduPilot");
+            break;
+        case MAV_AUTOPILOT_PX4:
+            printf("PX4");
+            break;
+        default:
+            printf("other");
+            break;
+    }
+	printf("\n");
+    
+}
+
+unsigned long long get_current_time_ms2() {
+    clock_t current_clock_ticks = clock();	
+    return (unsigned long long)(current_clock_ticks * 1000 / CLOCKS_PER_SEC);
+	
+}
+unsigned long long get_current_time_ms() {
+    time_t current_time = time(NULL);
+    return (unsigned long long)(current_time * 1000);
+}
+
+
+uint16_t channels[18];
+
+unsigned static long LastStart=0;//get_current_time_ms();
+unsigned static long LastValue=0;
+
+void ProcessChannels(){
+	//ch_count , not zero based, 1 is first
+	uint16_t val=0;
+	if (ch_count<1 || ch_count>16)
+		return;
+
+	if ( abs(get_current_time_ms()-LastStart) <1000)
+		return;
+
+	val=channels[ch_count-1];
+	if (abs(val-LastValue)<100)//the change is too small
+		return;
+	LastValue=val;
+	char buff[44];
+    sprintf(buff, "channels.sh %d %d &", ch_count, val);
+	LastStart=get_current_time_ms();
+    system(buff);
+	
+    if (verbose) printf("Called channels.sh %d %d\n", ch_count, val);
+
+}
+
+
+void handle_msg_id_rc_channels_raw(const mavlink_message_t* message){
+	mavlink_rc_channels_raw_t rc_channels;
+	mavlink_msg_rc_channels_raw_decode(message, &rc_channels);
+
+	
+	memcpy(&channels[0], &rc_channels.chan1_raw, 8 * sizeof(uint16_t));
+
+	//printf("Channels : %02d | %02d | %02d | %02d | %02d | %02d | %02d | %02d \n",channels[0],channels[1],channels[2],channels[3],channels[4],channels[5],channels[6],channels[7]
+
+	printf("Channels :"); 
+	for (int i =0; i <8;i++)
+		printf("| %02d", channels[i]);
+	printf("\n");	
+		
+	ProcessChannels();
+}
+
+
+void handle_msg_id_rc_channels_override(const mavlink_message_t* message){
+	mavlink_rc_channels_override_t rc_channels;
+	mavlink_msg_rc_channels_override_decode(message, &rc_channels);	
+	memcpy(&channels[0], &rc_channels.chan1_raw, 18 * sizeof(uint16_t));	
+	printf("Channels :"); // %02d | %02d | %02d | %02d | %02d | %02d | %02d | %02d | %02d | %02d | %02d | %02d | %02d | %02d | %02d | %02d\n"	);	
+
+	for (int i =0; i <18;i++)
+		printf("| %02d", channels[i]);
+	printf("\n");	
+	ProcessChannels();
+}
+
+void handle_msg_id_rc_channels(const mavlink_message_t* message){
+	mavlink_rc_channels_t rc_channels;
+	mavlink_msg_rc_channels_decode(message, &rc_channels);	
+	memcpy(&channels[0], &rc_channels.chan1_raw, 18 * sizeof(uint16_t));	
+	printf("Channels :"); // %02d | %02d | %02d | %02d | %02d | %02d | %02d | %02d | %02d | %02d | %02d | %02d | %02d | %02d | %02d | %02d\n"	);	
+
+	for (int i =0; i <18;i++)
+		printf("| %02d", channels[i]);
+	printf("\n");	
+	ProcessChannels();
+
+}
+
+
+
+static void process_mavlink(uint8_t* buffer, int count){
+
+    mavlink_message_t message;
+    mavlink_status_t status;
+    for (int i = 0; i < count; ++i) {
+        if (mavlink_parse_char(MAVLINK_COMM_0, buffer[i], &message, &status) == 1) {
+			ShowVersionOnce(&message, (uint8_t) buffer[0]);
+             //printf("Mavlink msg %d no: %d\n",message.msgid, message.seq);
+            switch (message.msgid) {
+            case MAVLINK_MSG_ID_RC_CHANNELS_RAW://35
+                handle_msg_id_rc_channels_raw(&message);
+                break;
+            
+
+            case MAVLINK_MSG_ID_RC_CHANNELS_OVERRIDE://70
+                handle_msg_id_rc_channels_override(&message);
+                break;
+
+			case MAVLINK_MSG_ID_RC_CHANNELS://65
+                handle_msg_id_rc_channels(&message);
+                break;
+
+
+             case MAVLINK_MSG_ID_HEARTBEAT:
+                handle_heartbeat(&message);
+                break;
+            }
+        }
+    }
+}
+
 static long ttl_packets=0;
 static long ttl_bytes=0;
 static void serial_read_cb(struct bufferevent *bev, void *arg)
@@ -163,25 +333,12 @@ static void serial_read_cb(struct bufferevent *bev, void *arg)
 			return;
 		}
 		packet_len = in_len;
-/*
-		// find first 0xFE and skip everything before it
-		if (*data != 0xFE) {
-			int bad_len = until_first_fe(data, in_len);
-			printf(">> Skipping %d bytes of unknown data\n",
-			       bad_len);
-			evbuffer_drain(input, bad_len);
-			continue;
-		}
 
-		if (!get_mavlink_packet(data, in_len, &packet_len))
-			return;
-
-		// TODO: check CRC correctness and skip bad packets
-*/
-//Simply forward all serial input to UDP.
+		//First forward all serial input to UDP.
 		ttl_packets++;
 		ttl_bytes+=packet_len;
-		if (ttl_packets%10==1)
+
+		if (!version_shown && ttl_packets%10==3)//If garbage only, give some feedback do diagnose
 			printf("Packets:%d  Bytes:%d\n",ttl_packets,ttl_bytes);
 
 		if (sendto(out_sock, data, packet_len, 0,
@@ -191,9 +348,13 @@ static void serial_read_cb(struct bufferevent *bev, void *arg)
 			event_base_loopbreak(base);
 		}
 
+		//Let's try to parse the stream		
+		process_mavlink(data,packet_len);
 		evbuffer_drain(input, packet_len);
 	}
 }
+
+
 
 static void serial_event_cb(struct bufferevent *bev, short events, void *arg)
 {
@@ -330,6 +491,8 @@ int main(int argc, char **argv)
 		{ "baudrate", required_argument, NULL, 'b' },
 		{ "out", required_argument, NULL, 'o' },
 		{ "in", required_argument, NULL, 'i' },
+		{ "channels", required_argument, NULL, 'c' },
+		{ "verbose", no_argument, NULL, 'v' },
 		{ "help", no_argument, NULL, 'h' },
 		{ NULL, 0, NULL, 0 }
 	};
@@ -356,6 +519,14 @@ int main(int argc, char **argv)
 		case 'i':
 			in_addr = optarg;
 			break;
+		case 'c':
+			ch_count = atoi(optarg);
+			if(ch_count == 0) printf("rc_channels  monitoring disabled\n");
+			else printf("Monitoring channel %d \n", ch_count);
+			break;
+		case 'v':
+			verbose = true;
+			break;			
 		case 'h':
 		default:
 			print_usage();
