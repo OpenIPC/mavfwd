@@ -3,6 +3,7 @@
     "files.associations": {
         "mavlink.h": "c",
         "system_error": "c",
-        "chrono": "c"
+        "chrono": "c",
+        "common.h": "c"
     }
 }

@@ -9,7 +9,7 @@
             "program": "${workspaceFolder}/mavfwd",
             "args": [
                 "--master",
-                "/dev/ttyUSB0",
+                "/dev/ttyUSB1",
                 "--baudrate",
                 "115200",
                 "--out",
@@ -17,8 +17,8 @@
                 "--in",
                 "127.0.0.1:14551",
                 "--c",
-                "2",
-                "--v"
+                "7",
+                ""
             ],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",

@@ -35,6 +35,7 @@ int out_sock;
 
 uint8_t ch_count = 0;
 bool verbose = false;
+long wait_after_bash=1000; //Time to wait between bash script starts.
 
 static void print_usage()
 {
@@ -43,6 +44,9 @@ static void print_usage()
 	       "  --master        Local MAVLink master port (%s by default)\n"
 	       "  --baudrate      Serial port baudrate (%d by default)\n"
 	       "  --out           Remote output port (%s by default)\n"
+	       "  --in            Remote input port (%s by default)\n"
+		   "  --c             RC Channel to listen for commands (0 by default)\n"
+		   "  --w             Delay after each command received\n"
 	       "  --in            Remote input port (%s by default)\n"
 	       "  --help          Display this help\n",
 	       default_master, default_baudrate, defualt_out_addr,
@@ -226,36 +230,41 @@ void ProcessChannels(){
 	if (ch_count<1 || ch_count>16)
 		return;
 
-	if ( abs(get_current_time_ms()-LastStart) <1000)
+	if ( abs(get_current_time_ms()-LastStart) < wait_after_bash)
 		return;
 
 	val=channels[ch_count-1];
-	if (abs(val-LastValue)<100)//the change is too small
+
+	if (val==LastValue)
 		return;
+
+	if (abs(val-LastValue)<32)//the change is too small
+		return;
+
 	LastValue=val;
 	char buff[44];
     sprintf(buff, "channels.sh %d %d &", ch_count, val);
 	LastStart=get_current_time_ms();
     system(buff);
 	
-    if (verbose) printf("Called channels.sh %d %d\n", ch_count, val);
+   printf("Called channels.sh %d %d\n", ch_count, val);
 
 }
 
+void showchannels(int count){
+	if (verbose){
+		printf("Channels :"); 
+		for (int i =0; i <count;i++)
+			printf("| %02d", channels[i]);
+		printf("\n");
+	}
+}
 
 void handle_msg_id_rc_channels_raw(const mavlink_message_t* message){
 	mavlink_rc_channels_raw_t rc_channels;
-	mavlink_msg_rc_channels_raw_decode(message, &rc_channels);
-
-	
-	memcpy(&channels[0], &rc_channels.chan1_raw, 8 * sizeof(uint16_t));
-
-	//printf("Channels : %02d | %02d | %02d | %02d | %02d | %02d | %02d | %02d \n",channels[0],channels[1],channels[2],channels[3],channels[4],channels[5],channels[6],channels[7]
-
-	printf("Channels :"); 
-	for (int i =0; i <8;i++)
-		printf("| %02d", channels[i]);
-	printf("\n");	
+	mavlink_msg_rc_channels_raw_decode(message, &rc_channels);	
+	memcpy(&channels[0], &rc_channels.chan1_raw, 8 * sizeof(uint16_t));	
+	showchannels(8);
 		
 	ProcessChannels();
 }
@@ -265,11 +274,7 @@ void handle_msg_id_rc_channels_override(const mavlink_message_t* message){
 	mavlink_rc_channels_override_t rc_channels;
 	mavlink_msg_rc_channels_override_decode(message, &rc_channels);	
 	memcpy(&channels[0], &rc_channels.chan1_raw, 18 * sizeof(uint16_t));	
-	printf("Channels :"); // %02d | %02d | %02d | %02d | %02d | %02d | %02d | %02d | %02d | %02d | %02d | %02d | %02d | %02d | %02d | %02d\n"	);	
-
-	for (int i =0; i <18;i++)
-		printf("| %02d", channels[i]);
-	printf("\n");	
+	showchannels(18);
 	ProcessChannels();
 }
 
@@ -277,15 +282,9 @@ void handle_msg_id_rc_channels(const mavlink_message_t* message){
 	mavlink_rc_channels_t rc_channels;
 	mavlink_msg_rc_channels_decode(message, &rc_channels);	
 	memcpy(&channels[0], &rc_channels.chan1_raw, 18 * sizeof(uint16_t));	
-	printf("Channels :"); // %02d | %02d | %02d | %02d | %02d | %02d | %02d | %02d | %02d | %02d | %02d | %02d | %02d | %02d | %02d | %02d\n"	);	
-
-	for (int i =0; i <18;i++)
-		printf("| %02d", channels[i]);
-	printf("\n");	
+	showchannels(18);
 	ProcessChannels();
-
 }
-
 
 
 static void process_mavlink(uint8_t* buffer, int count){
@@ -295,23 +294,22 @@ static void process_mavlink(uint8_t* buffer, int count){
     for (int i = 0; i < count; ++i) {
         if (mavlink_parse_char(MAVLINK_COMM_0, buffer[i], &message, &status) == 1) {
 			ShowVersionOnce(&message, (uint8_t) buffer[0]);
-             //printf("Mavlink msg %d no: %d\n",message.msgid, message.seq);
+			if (verbose)
+        	    printf("Mavlink msg %d no: %d\n",message.msgid, message.seq);
             switch (message.msgid) {
-            case MAVLINK_MSG_ID_RC_CHANNELS_RAW://35
+            case MAVLINK_MSG_ID_RC_CHANNELS_RAW://35 Used by INAV
                 handle_msg_id_rc_channels_raw(&message);
                 break;
-            
-
+        
             case MAVLINK_MSG_ID_RC_CHANNELS_OVERRIDE://70
                 handle_msg_id_rc_channels_override(&message);
                 break;
 
-			case MAVLINK_MSG_ID_RC_CHANNELS://65
+			case MAVLINK_MSG_ID_RC_CHANNELS://65 used by ArduPilot
                 handle_msg_id_rc_channels(&message);
                 break;
 
-
-             case MAVLINK_MSG_ID_HEARTBEAT:
+             case MAVLINK_MSG_ID_HEARTBEAT://Msg info from the FC
                 handle_heartbeat(&message);
                 break;
             }
@@ -348,12 +346,12 @@ static void serial_read_cb(struct bufferevent *bev, void *arg)
 			event_base_loopbreak(base);
 		}
 
-		//Let's try to parse the stream		
-		process_mavlink(data,packet_len);
+		//Let's try to parse the stream	
+		if (ch_count>0)//if no RC channel control needed, only forward the data
+			process_mavlink(data,packet_len);//Let's try to parse the stream	
 		evbuffer_drain(input, packet_len);
 	}
 }
-
 
 
 static void serial_event_cb(struct bufferevent *bev, short events, void *arg)
@@ -491,7 +489,8 @@ int main(int argc, char **argv)
 		{ "baudrate", required_argument, NULL, 'b' },
 		{ "out", required_argument, NULL, 'o' },
 		{ "in", required_argument, NULL, 'i' },
-		{ "channels", required_argument, NULL, 'c' },
+		{ "channel", required_argument, NULL, 'c' },
+		{ "wait_time", required_argument, NULL, 'w' },
 		{ "verbose", no_argument, NULL, 'v' },
 		{ "help", no_argument, NULL, 'h' },
 		{ NULL, 0, NULL, 0 }
@@ -521,8 +520,16 @@ int main(int argc, char **argv)
 			break;
 		case 'c':
 			ch_count = atoi(optarg);
-			if(ch_count == 0) printf("rc_channels  monitoring disabled\n");
-			else printf("Monitoring channel %d \n", ch_count);
+			if(ch_count == 0) 
+				printf("rc_channels  monitoring disabled\n");
+			else 
+				printf("Monitoring channel %d \n", ch_count);
+
+			LastStart=get_current_time_ms();
+			break;
+		case 'w':
+			wait_after_bash = atoi(optarg);			
+			LastStart=get_current_time_ms();
 			break;
 		case 'v':
 			verbose = true;
