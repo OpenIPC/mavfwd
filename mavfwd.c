@@ -190,7 +190,7 @@ void handle_heartbeat(const mavlink_message_t* message)
     printf("Flight Controller Type :");
     switch (heartbeat.autopilot) {
         case MAV_AUTOPILOT_GENERIC:
-            printf("generic");
+            printf("generic/INAV");
             break;
         case MAV_AUTOPILOT_ARDUPILOTMEGA:
             printf("ArduPilot");
@@ -199,7 +199,7 @@ void handle_heartbeat(const mavlink_message_t* message)
             printf("PX4");
             break;
         default:
-            printf("INAV/other");
+            printf("other");
             break;
     }
 	printf("\n");    
