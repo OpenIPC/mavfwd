@@ -18,6 +18,7 @@
 #include <event2/buffer.h>
 #include <event2/bufferevent.h>
 
+
 #include "mavlink/common/mavlink.h"
 
 #define MAX_MTU 9000
@@ -35,7 +36,7 @@ int out_sock;
 
 uint8_t ch_count = 0;
 bool verbose = false;
-long wait_after_bash=1000; //Time to wait between bash script starts.
+long wait_after_bash=2000; //Time to wait between bash script starts.
 
 static void print_usage()
 {
@@ -46,7 +47,7 @@ static void print_usage()
 	       "  --out           Remote output port (%s by default)\n"
 	       "  --in            Remote input port (%s by default)\n"
 		   "  --c             RC Channel to listen for commands (0 by default)\n"
-		   "  --w             Delay after each command received\n"
+		   "  --w             Delay after each command received(2000ms defaulr)\n"
 	       "  --in            Remote input port (%s by default)\n"
 	       "  --help          Display this help\n",
 	       default_master, default_baudrate, defualt_out_addr,
@@ -171,12 +172,9 @@ MAVLink 1: 0xFE
 MAVLink 2: 0xFD
 */
 	if (header==0xFE)
-		printf("MAVLink version: 1.0\n");
+		printf("Detected MAVLink ver: 1.0  (%d)\n",msg->magic);
 	if (header==0xFD)
-		printf("MAVLink version: 2.0\n");
-
-	  //if (msg->magic == MAVLINK_STX)             
-    printf("Magic : %d  \n",msg->magic);
+		printf("Detected MAVLink version: 2.0  (%d)\n",msg->magic);
    
 }
 bool fc_shown=false;
@@ -201,11 +199,10 @@ void handle_heartbeat(const mavlink_message_t* message)
             printf("PX4");
             break;
         default:
-            printf("other");
+            printf("INAV/other");
             break;
     }
-	printf("\n");
-    
+	printf("\n");    
 }
 
 unsigned long long get_current_time_ms2() {
@@ -423,6 +420,9 @@ static int handle_data(const char *port_name, int baudrate,
 
 	out_sock = socket(AF_INET, SOCK_DGRAM, 0);
 	int in_sock = socket(AF_INET, SOCK_DGRAM, 0);
+
+	printf("Listening on %s...\n", port_name);
+
 	struct sockaddr_in sin_in = {
 		.sin_family = AF_INET,
 	};
@@ -523,7 +523,7 @@ int main(int argc, char **argv)
 			if(ch_count == 0) 
 				printf("rc_channels  monitoring disabled\n");
 			else 
-				printf("Monitoring channel %d \n", ch_count);
+				printf("Monitoring RC channel %d \n", ch_count);
 
 			LastStart=get_current_time_ms();
 			break;
