@@ -10,16 +10,22 @@ Usage: mavfwd [OPTIONS]\n"
             --baudrate      Serial port baudrate (%d by default)
             --out           Remote output port (%s by default)
             --in            Remote input port (%s by default)
-            --c             RC Channel to listen for commands (0 by default)
+            --channels       RC Channel to listen for commands (0 by default)
             --w             Delay after each command received(2000ms defaulr)
             --in            Remote input port (%s by default)
+            --aggregate             Aggregate Packets - [1-20] Pckt count before flush.  [50-1400] buffer size in bytes before flush)
             --help          Display this help
 ```
-Example :
+Examples :
 
-```mavfwd --master /dev/ttyAMA0 --baudrate 115200 --out 192.168.1.20:14550 --c 7 --w 3000```
+```mavfwd --master /dev/ttyAMA0 --baudrate 115200 --out 192.168.1.20:14550 --c 7 --w 3000 -a 10```
 
 Will read on the first UART with baudrade 115200 and will listen for values in RC channel 7 that come from the Remote Control via Flight Controller.
 Every time the value is changed with more than 5% the bash script channels.sh {Channel} {Value} will be started with params.
 The will check the Value(usually between 1000 and 2000) and will do the tasks need - reconfigure encoder, switch IR mode, etc.
 To protect the system from overloading, the scritp will not be started again for 3000ms.
+Packets will be aggregated in chunks of 10 into one UDP frame. A MAVLINK_MSG_ID_ATTITUDE from the FC will flush the buffer. 
+This way the OSD will be updated with the same rate and no lag. 
+ -a 15 : will flush the cached messages into one UDP packet after count of message reaches 15
+ -a 1024 : will flush the cached messages into one UDP packet total length of all message reaches 1024 bytes
+in both cases the buffer will be flushed if there are at least 3 packets and a MAVLINK_MSG_ID_ATTITUDE is received.

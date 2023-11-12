@@ -38,6 +38,8 @@ uint8_t ch_count = 0;
 bool verbose = false;
 long wait_after_bash=2000; //Time to wait between bash script starts.
 
+long aggregate=1;
+
 static void print_usage()
 {
 	printf("Usage: mavfwd [OPTIONS]\n"
@@ -48,10 +50,10 @@ static void print_usage()
 	       "  --in            Remote input port (%s by default)\n"
 		   "  --c             RC Channel to listen for commands (0 by default)\n"
 		   "  --w             Delay after each command received(2000ms defaulr)\n"
-	       "  --in            Remote input port (%s by default)\n"
+	       "  --a             Aggregate packets in frames (%d by default)\n"
 	       "  --help          Display this help\n",
 	       default_master, default_baudrate, defualt_out_addr,
-	       default_in_addr);
+	       default_in_addr, aggregate);
 }
 
 static speed_t speed_by_value(int baudrate)
@@ -283,39 +285,67 @@ void handle_msg_id_rc_channels(const mavlink_message_t* message){
 	ProcessChannels();
 }
 
-
-static void process_mavlink(uint8_t* buffer, int count){
+unsigned char mavbuf[2048];
+unsigned int mavbuff_offset=0;
+unsigned int mavpckts_count=0;
+static void process_mavlink(uint8_t* buffer, int count, void *arg){
 
     mavlink_message_t message;
     mavlink_status_t status;
     for (int i = 0; i < count; ++i) {
+		
+		if (mavbuff_offset>2000){
+			printf("Mavlink buffer overflowed! Packed lost!\n");
+			mavbuff_offset=0;
+		}
+		mavbuf[mavbuff_offset]=buffer[i];
+		mavbuff_offset++;
         if (mavlink_parse_char(MAVLINK_COMM_0, buffer[i], &message, &status) == 1) {
 			ShowVersionOnce(&message, (uint8_t) buffer[0]);
 			if (verbose)
         	    printf("Mavlink msg %d no: %d\n",message.msgid, message.seq);
             switch (message.msgid) {
-            case MAVLINK_MSG_ID_RC_CHANNELS_RAW://35 Used by INAV
-                handle_msg_id_rc_channels_raw(&message);
-                break;
-        
-            case MAVLINK_MSG_ID_RC_CHANNELS_OVERRIDE://70
-                handle_msg_id_rc_channels_override(&message);
-                break;
+            	case MAVLINK_MSG_ID_RC_CHANNELS_RAW://35 Used by INAV
+	                handle_msg_id_rc_channels_raw(&message);
+	                break;
+	            case MAVLINK_MSG_ID_RC_CHANNELS_OVERRIDE://70
+    	            handle_msg_id_rc_channels_override(&message);
+                	break;
 
-			case MAVLINK_MSG_ID_RC_CHANNELS://65 used by ArduPilot
-                handle_msg_id_rc_channels(&message);
-                break;
+				case MAVLINK_MSG_ID_RC_CHANNELS://65 used by ArduPilot
+	                handle_msg_id_rc_channels(&message);
+                	break;
 
-             case MAVLINK_MSG_ID_HEARTBEAT://Msg info from the FC
-                handle_heartbeat(&message);
-                break;
+             	case MAVLINK_MSG_ID_HEARTBEAT://Msg info from the FC
+	                handle_heartbeat(&message);
+                	break;
             }
-        }
+			mavpckts_count++;			
+			bool mustflush=false;
+			if (aggregate>0){//We will send whole packets only				
+				if (
+					((aggregate>=1 && aggregate<50 ) && mavpckts_count>=aggregate ) ||  //if packets more than treshold
+					((aggregate>50 && aggregate<2000 ) && mavbuff_offset>=aggregate ) || //if buffer  more than treshold
+					((mavpckts_count>=3) && message.msgid==MAVLINK_MSG_ID_ATTITUDE )	//MAVLINK_MSG_ID_ATTITUDE will always cause the buffer flushed
+				){
+					//flush and send all data
+					if (sendto(out_sock, mavbuf, mavbuff_offset, 0, (struct sockaddr *)&sin_out, sizeof(sin_out)) == -1) {
+						perror("sendto()");
+						event_base_loopbreak(arg);
+					}
+					if (verbose)
+						printf("%d Pckts / %d bytes sent\n",mavpckts_count,mavbuff_offset);
+					mavbuff_offset=0;
+					mavpckts_count=0;
+				}
+			}
+        }//if mavlink_parse_char
     }
 }
 
 static long ttl_packets=0;
 static long ttl_bytes=0;
+
 static void serial_read_cb(struct bufferevent *bev, void *arg)
 {
 	struct evbuffer *input = bufferevent_get_input(bev);
@@ -336,16 +366,19 @@ static void serial_read_cb(struct bufferevent *bev, void *arg)
 		if (!version_shown && ttl_packets%10==3)//If garbage only, give some feedback do diagnose
 			printf("Packets:%d  Bytes:%d\n",ttl_packets,ttl_bytes);
 
-		if (sendto(out_sock, data, packet_len, 0,
+		if (aggregate==0){
+			if (sendto(out_sock, data, packet_len, 0,
 			   (struct sockaddr *)&sin_out,
 			   sizeof(sin_out)) == -1) {
-			perror("sendto()");
-			event_base_loopbreak(base);
+					perror("sendto()");
+					event_base_loopbreak(base);
+			}
 		}
 
 		//Let's try to parse the stream	
-		if (ch_count>0)//if no RC channel control needed, only forward the data
-			process_mavlink(data,packet_len);//Let's try to parse the stream	
+		if (aggregate>0 || ch_count>0)//if no RC channel control needed, only forward the data
+			process_mavlink(data,packet_len, arg);//Let's try to parse the stream		
+
 		evbuffer_drain(input, packet_len);
 	}
 }
@@ -488,10 +521,11 @@ int main(int argc, char **argv)
 		{ "master", required_argument, NULL, 'm' },
 		{ "baudrate", required_argument, NULL, 'b' },
 		{ "out", required_argument, NULL, 'o' },
+		{ "aggregate", required_argument, NULL, 'a' },
 		{ "in", required_argument, NULL, 'i' },
-		{ "channel", required_argument, NULL, 'c' },
-		{ "wait_time", required_argument, NULL, 'w' },
-		{ "verbose", no_argument, NULL, 'v' },
+		{ "channels", required_argument, NULL, 'c' },
+		{ "wait_time", required_argument, NULL, 'w' },				
+		{ "verbose", no_argument, NULL, 'v' },		
 		{ "help", no_argument, NULL, 'h' },
 		{ NULL, 0, NULL, 0 }
 	};
@@ -503,8 +537,7 @@ int main(int argc, char **argv)
 
 	int opt;
 	int long_index = 0;
-	while ((opt = getopt_long_only(argc, argv, "", long_options,
-				       &long_index)) != -1) {
+	while ((opt = getopt_long_only(argc, argv, "", long_options, &long_index)) != -1) {
 		switch (opt) {
 		case 'm':
 			port_name = optarg;
@@ -518,19 +551,34 @@ int main(int argc, char **argv)
 		case 'i':
 			in_addr = optarg;
 			break;
+		case 'a':	
+			aggregate = atoi(optarg);
+			if (aggregate>2000)
+				aggregate=2000;
+
+			if(aggregate == 0) 
+				printf("No parsing, raw UART to UDP only\n");
+			else if (aggregate<50)
+				printf("Aggregate mavlink pckts in packs of %d \n", aggregate);
+			else if (aggregate>50)
+				printf("Aggregate mavlink pckts till buffer reaches %d bytes \n", aggregate);
+						
+		break;
 		case 'c':
 			ch_count = atoi(optarg);
 			if(ch_count == 0) 
 				printf("rc_channels  monitoring disabled\n");
 			else 
 				printf("Monitoring RC channel %d \n", ch_count);
-
+			
 			LastStart=get_current_time_ms();
 			break;
 		case 'w':
 			wait_after_bash = atoi(optarg);			
 			LastStart=get_current_time_ms();
 			break;
+
+		
 		case 'v':
 			verbose = true;
 			break;			
