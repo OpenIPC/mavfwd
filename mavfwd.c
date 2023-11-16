@@ -48,10 +48,11 @@ static void print_usage()
 	       "  --baudrate      Serial port baudrate (%d by default)\n"
 	       "  --out           Remote output port (%s by default)\n"
 	       "  --in            Remote input port (%s by default)\n"
-		   "  --c             RC Channel to listen for commands (0 by default)\n"
-		   "  --w             Delay after each command received(2000ms defaulr)\n"
-	       "  --a             Aggregate packets in frames (%d by default)\n"
-	       "  --help          Display this help\n",
+		   "  -c             RC Channel to listen for commands (0 by default)\n"
+		   "  -w             Delay after each command received(2000ms defaulr)\n"
+	       "  -a             Aggregate packets in frames (%d by default)\n"
+		   "  -t             Temp folder to read message (default is current folder)\n"
+	       "  -help          Display this help\n",
 	       default_master, default_baudrate, defualt_out_addr,
 	       default_in_addr, aggregate);
 }
@@ -162,6 +163,57 @@ static size_t until_first_fe(unsigned char *data, size_t len)
 	return len;
 }
 
+#define MAX_BUFFER_SIZE 50 //Limited by mavlink
+
+static char MavLinkMsgFile[128]= "mavlink.msg";  
+
+bool Check4MavlinkMsg(char* buffer) {
+    //const char *filename = MavLinkMsgFile;//"mavlink.msg";
+
+    // Open the file for reading
+    FILE *file = fopen(MavLinkMsgFile, "rb");
+    if (file == NULL)// No file, no problem
+        return false;
+        
+    size_t bytesRead = fread(buffer, 1, MAX_BUFFER_SIZE, file);
+    fclose(file);
+
+    if (bytesRead > 0) {        
+		if (verbose)
+        	printf("Mavlink msg from file:%s\n", buffer);
+        if (remove(MavLinkMsgFile) != 0)             
+        	printf("Error deleting file");        
+		return true;
+    } else 
+        printf("Mavlink empty file ?!\n");    
+
+	return false;
+}
+static uint8_t system_id=1;
+static bool SendInfoToGround(){
+	char msg_buf[MAX_BUFFER_SIZE];
+	if (!Check4MavlinkMsg(&msg_buf[0]))
+		return false;
+
+	//Huston, we have a message for you.
+    mavlink_message_t message;
+ 	
+    mavlink_msg_statustext_pack_chan(
+        system_id,
+        MAV_COMP_ID_SYSTEM_CONTROL,
+        MAVLINK_COMM_1,
+        &message,
+		4,  	// 4 - Warning, 5 - Error
+		msg_buf,
+		0,0);
+
+    uint8_t buffer[MAVLINK_MAX_PACKET_LEN];
+    const int len = mavlink_msg_to_send_buffer(buffer, &message);
+		
+	sendto(out_sock, buffer, len, 0, (struct sockaddr *)&sin_out, sizeof(sin_out));
+
+	return true;    
+}
 
 bool version_shown=false;
 static void ShowVersionOnce(mavlink_message_t* msg, uint8_t header){
@@ -205,6 +257,15 @@ void handle_heartbeat(const mavlink_message_t* message)
             break;
     }
 	printf("\n");    
+}
+
+
+void handle_statustext(const mavlink_message_t* message)
+{	
+    mavlink_statustext_t statustext;
+    mavlink_msg_statustext_decode(message, &statustext);	
+    printf("FC message:%s", statustext.text);
+
 }
 
 unsigned long long get_current_time_ms2() {
@@ -301,6 +362,7 @@ static void process_mavlink(uint8_t* buffer, int count, void *arg){
 		mavbuf[mavbuff_offset]=buffer[i];
 		mavbuff_offset++;
         if (mavlink_parse_char(MAVLINK_COMM_0, buffer[i], &message, &status) == 1) {
+			system_id=message.sysid;
 			ShowVersionOnce(&message, (uint8_t) buffer[0]);
 			if (verbose)
         	    printf("Mavlink msg %d no: %d\n",message.msgid, message.seq);
@@ -319,6 +381,9 @@ static void process_mavlink(uint8_t* buffer, int count, void *arg){
              	case MAVLINK_MSG_ID_HEARTBEAT://Msg info from the FC
 	                handle_heartbeat(&message);
                 	break;
+				case MAVLINK_MSG_ID_STATUSTEXT://Msg info from the FC					
+	                //handle_statustext(&message);
+                	break;					
             }
 			mavpckts_count++;			
 			bool mustflush=false;
@@ -337,6 +402,7 @@ static void process_mavlink(uint8_t* buffer, int count, void *arg){
 						printf("%d Pckts / %d bytes sent\n",mavpckts_count,mavbuff_offset);
 					mavbuff_offset=0;
 					mavpckts_count=0;
+					SendInfoToGround();
 				}
 			}
         }//if mavlink_parse_char
@@ -525,6 +591,7 @@ int main(int argc, char **argv)
 		{ "in", required_argument, NULL, 'i' },
 		{ "channels", required_argument, NULL, 'c' },
 		{ "wait_time", required_argument, NULL, 'w' },				
+		{ "tempfolder", required_argument, NULL, 't' },				
 		{ "verbose", no_argument, NULL, 'v' },		
 		{ "help", no_argument, NULL, 'h' },
 		{ NULL, 0, NULL, 0 }
@@ -572,6 +639,15 @@ int main(int argc, char **argv)
 				printf("Monitoring RC channel %d \n", ch_count);
 			
 			LastStart=get_current_time_ms();
+			break;
+
+		case 't':
+
+			 if (optarg != NULL) {        		
+        		
+        		snprintf(MavLinkMsgFile, sizeof(MavLinkMsgFile), "%smavlink.msg", optarg);
+			 }
+
 			break;
 		case 'w':
 			wait_after_bash = atoi(optarg);			
