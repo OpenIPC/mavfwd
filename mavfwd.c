@@ -8,6 +8,7 @@
 #include <signal.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <sys/mman.h>
 #include <arpa/inet.h>
 #include <stdbool.h>
 #include <termios.h>
@@ -47,6 +48,7 @@ static void print_usage()
 	       "  --out           Remote output port (%s by default)\n"
 	       "  --in            Remote input port (%s by default)\n"
 	       "  --channels      RC override channels to parse after first 4 and call /root/channels.sh $ch $val, default 0\n"
+	       "  --temp          Inject SoC temperature into telemetry\n"
 	       "  --verbose       display each packet, default not\n"	       
 	       "  --help          Display this help\n",
 	       default_master, default_baudrate, defualt_out_addr,
@@ -268,11 +270,62 @@ static void in_read(evutil_socket_t sock, short event, void *arg)
 	bufferevent_write(serial_bev, buf, nread);
 }
 
+
+static void* setup_temp_mem(off_t base, size_t size)
+{
+	int mem_fd;
+
+	mem_fd = open("/dev/mem", O_RDWR | O_SYNC);
+	if (mem_fd < 0) {
+		fprintf(stderr, "can't open /dev/mem\n");
+		return NULL;
+	}
+
+	char *mapped_area =
+		mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, mem_fd, base);
+	if (mapped_area == MAP_FAILED) {
+		fprintf(stderr, "read_mem_reg mmap error: %s (%d)\n",
+				strerror(errno), errno);
+		return NULL;
+	}
+
+	uint32_t MISC_CTRL45 = 0;
+
+	// Set the T-Sensor cyclic capture mode by configuring MISC_CTRL45 bit[30]
+	MISC_CTRL45 |= 1 << 30;
+
+	// Set the capture period by configuring MISC_CTRL45 bit[27:20]
+	// The formula for calculating the cyclic capture periodis as follows:
+	//	T = N x 2 (ms)
+	//	N is the value of MISC_CTRL45 bit[27:20]
+	MISC_CTRL45 |= 50 << 20;
+
+	// Enable the T-Sensor by configuring MISC_CTRL45 bit[31] and start to collect the temperature
+	MISC_CTRL45 |= 1 << 31;
+
+	*(volatile uint32_t *)(mapped_area + 0xB4) = MISC_CTRL45;
+
+	return mapped_area;
+}
+
+static void temp_read(evutil_socket_t sock, short event, void *arg)
+{
+	(void)sock;
+	(void)event;
+	char *mapped_area = arg;
+
+	uint32_t val = *(volatile uint32_t *)(mapped_area + 0xBC);
+	float tempo = val & ((1 << 16) - 1);
+        tempo = ((tempo - 117) / 798) * 165 - 40;
+
+	printf("Temp read %f C\n", tempo);
+}
+
 static int handle_data(const char *port_name, int baudrate,
-		       const char *out_addr, const char *in_addr)
+		       const char *out_addr, const char *in_addr, bool temp)
 {
 	struct event_base *base = NULL;
-	struct event *sig_int = NULL, *in_ev = NULL;
+	struct event *sig_int = NULL, *in_ev = NULL, *temp_tmr = NULL;
 	int ret = EXIT_SUCCESS;
 
 	int serial_fd = open(port_name, O_RDWR | O_NOCTTY);
@@ -338,9 +391,20 @@ static int handle_data(const char *port_name, int baudrate,
 	in_ev = event_new(base, in_sock, EV_READ | EV_PERSIST, in_read, NULL);
 	event_add(in_ev, NULL);
 
+	if (temp) {
+		void* mem = setup_temp_mem(0x12028000, 0xFFFF);
+		temp_tmr = event_new(base, -1, EV_PERSIST, temp_read, mem);
+		evtimer_add(temp_tmr, &(struct timeval){.tv_sec = 1});
+	}
+
 	event_base_dispatch(base);
 
 err:
+	if (temp_tmr) {
+		event_del(temp_tmr);
+		event_free(temp_tmr);
+	}
+
 	if (serial_fd >= 0)
 		close(serial_fd);
 
@@ -371,6 +435,7 @@ int main(int argc, char **argv)
 		{ "out", required_argument, NULL, 'o' },
 		{ "in", required_argument, NULL, 'i' },
 		{ "channels", required_argument, NULL, 'c' },
+		{ "temp", no_argument, NULL, 't' },
 		{ "verbose", no_argument, NULL, 'v' },
 		{ "help", no_argument, NULL, 'h' },
 		{ NULL, 0, NULL, 0 }
@@ -380,6 +445,7 @@ int main(int argc, char **argv)
 	int baudrate = default_baudrate;
 	const char *out_addr = defualt_out_addr;
 	const char *in_addr = default_in_addr;
+	int temp = false;
 
 	int opt;
 	int long_index = 0;
@@ -403,6 +469,9 @@ int main(int argc, char **argv)
 			if(ch_count == 0) printf("rc_channels_override monitoring disabled\n");
 			else printf("rc_channels_override monitoring %d channels after first 4\n", ch_count);
 			break;
+		case 't':
+			temp = true;
+			break;
 		case 'v':
 			verbose = true;
 			break;
@@ -413,5 +482,5 @@ int main(int argc, char **argv)
 		}
 	}
 
-	return handle_data(port_name, baudrate, out_addr, in_addr);
+	return handle_data(port_name, baudrate, out_addr, in_addr, temp);
 }
