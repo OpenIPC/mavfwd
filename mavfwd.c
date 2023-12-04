@@ -23,10 +23,17 @@
 
 #define MAX_MTU 9000
 
+bool verbose = false;
+
 const char *default_master = "/dev/ttyAMA0";
 const int default_baudrate = 115200;
 const char *defualt_out_addr = "127.0.0.1:14600";
 const char *default_in_addr = "127.0.0.1:14601";
+const int RC_CHANNELS = 65; //RC_CHANNELS ( #65 ) for regular MAVLINK RC Channels read (https://mavlink.io/en/messages/common.html#RC_CHANNELS)
+const int RC_CHANNELS_RAW = 35; //RC_CHANNELS_RAW ( #35 ) for ExpressLRS,Crossfire and other RC procotols (https://mavlink.io/en/messages/common.html#RC_CHANNELS_RAW)
+
+uint8_t ch_count = 0;
+uint16_t ch[14];
 
 struct bufferevent *serial_bev;
 struct sockaddr_in sin_out = {
@@ -34,8 +41,6 @@ struct sockaddr_in sin_out = {
 };
 int out_sock;
 
-uint8_t ch_count = 0;
-bool verbose = false;
 long wait_after_bash=2000; //Time to wait between bash script starts.
 
 long aggregate=1;
@@ -48,11 +53,12 @@ static void print_usage()
 	       "  --baudrate      Serial port baudrate (%d by default)\n"
 	       "  --out           Remote output port (%s by default)\n"
 	       "  --in            Remote input port (%s by default)\n"
-		   "  -c             RC Channel to listen for commands (0 by default)\n"
-		   "  -w             Delay after each command received(2000ms defaulr)\n"
+	       "  -channels       RC Channel to listen for commands (0 by default) and call channels.sh\n"
+	       "  -w             Delay after each command received(2000ms defaulr)\n"
 	       "  -a             Aggregate packets in frames (%d by default)\n"
-		   "  -t             Temp folder to read message (default is current folder)\n"
-	       "  -help          Display this help\n",
+	       "  -t             Temp folder to read message (default is current folder)\n"	       
+	       "  --verbose       display each packet, default not\n"	       
+	       "  --help          Display this help\n",
 	       default_master, default_baudrate, defualt_out_addr,
 	       default_in_addr, aggregate);
 }
@@ -70,6 +76,16 @@ static speed_t speed_by_value(int baudrate)
 		return B57600;
 	case 115200:
 		return B115200;
+	case 230400:
+		return B230400;
+	case 460800:
+		return B460800;
+	case 500000:
+		return B500000;
+	case 921600:
+		return B921600;
+	case 1500000:
+		return B1500000;
 	default:
 		printf("Not implemented baudrate %d\n", baudrate);
 		exit(EXIT_FAILURE);
@@ -117,13 +133,41 @@ static void signal_cb(evutil_socket_t fd, short event, void *arg)
 
 static void dump_mavlink_packet(unsigned char *data, const char *direction)
 {
-	uint8_t seq = data[2];
-	uint8_t sys_id = data[3];
-	uint8_t comp_id = data[4];
-	uint8_t msg_id = data[5];
+  uint8_t seq;
+  uint8_t sys_id;
+  uint8_t comp_id;
+  uint32_t msg_id;
 
-	printf("%s sender %d/%d\t%d\t%d\n", direction, sys_id, comp_id, seq,
-	       msg_id);
+  if(data[0] == 0xFE) { //mavlink 1
+      seq = data[2];
+      sys_id = data[3];
+      comp_id = data[4];
+      msg_id = data[5];
+  } else { //mavlink 2
+      seq = data[4];
+      sys_id = data[5];
+      comp_id = data[6];
+      msg_id = data[7];
+  }
+
+	if (verbose) printf("%s %#02x sender %d/%d\t%d\t%d\n", direction, data[0], sys_id, comp_id, seq, msg_id);
+  
+  uint16_t val;
+  
+	if((msg_id == RC_CHANNELS || msg_id == RC_CHANNELS_RAW ) && ch_count > 0) {
+      uint8_t offset = 18; //15 = 1ch;
+      for(uint8_t i=0; i < ch_count; i++) {
+          val = data[offset] | (data[offset+1] << 8);
+          if(ch[i] != val) {
+              ch[i] = val;
+              char buff[44];
+              sprintf(buff, "channels.sh %d %d &", i+5, val);
+              system(buff);
+              if (verbose) printf("called channels.sh %d %d\n", i+5, val);
+           }
+      offset = offset + 2;
+	    } //for
+	} //msg_id
 }
 
 /* https://discuss.ardupilot.org/uploads/short-url/vS0JJd3BQfN9uF4DkY7bAeb6Svd.pdf
@@ -140,10 +184,13 @@ static bool get_mavlink_packet(unsigned char *in_buffer, int buf_len,
 	if (buf_len < 6 /* header */) {
 		return false;
 	}
-	assert(in_buffer[0] == 0xFE);
+	assert(in_buffer[0] == 0xFE || in_buffer[0] == 0xFD); //mavlink 1 or 2
 
 	uint8_t msg_len = in_buffer[1];
-	*packet_len = 6 /* header */ + msg_len + 2 /* crc */;
+	if (in_buffer[0] == 0xFE)
+    *packet_len = 6 /* header */ + msg_len + 2 /* crc */; //mavlink 1
+  else
+    *packet_len = 10 /* header */ + msg_len + 2 /* crc */; //mavlink 2
 	if (buf_len < *packet_len)
 		return false;
 
@@ -156,7 +203,7 @@ static bool get_mavlink_packet(unsigned char *in_buffer, int buf_len,
 static size_t until_first_fe(unsigned char *data, size_t len)
 {
 	for (size_t i = 1; i < len; i++) {
-		if (data[i] == 0xFE) {
+		if (data[i] == 0xFE || data[i] == 0xFD) {
 			return i;
 		}
 	}
@@ -653,11 +700,11 @@ int main(int argc, char **argv)
 			wait_after_bash = atoi(optarg);			
 			LastStart=get_current_time_ms();
 			break;
-
 		
 		case 'v':
 			verbose = true;
 			break;			
+
 		case 'h':
 		default:
 			print_usage();
