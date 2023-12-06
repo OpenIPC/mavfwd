@@ -8,6 +8,7 @@
 #include <signal.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <sys/mman.h>
 #include <arpa/inet.h>
 #include <stdbool.h>
 #include <termios.h>
@@ -53,12 +54,14 @@ static void print_usage()
 	       "  --baudrate      Serial port baudrate (%d by default)\n"
 	       "  --out           Remote output port (%s by default)\n"
 	       "  --in            Remote input port (%s by default)\n"
-	       "  -channels       RC Channel to listen for commands (0 by default) and call channels.sh\n"
+
+	       "  --channels     RC Channel to listen for commands (0 by default) and call channels.sh\n"
 	       "  -w             Delay after each command received(2000ms defaulr)\n"
-	       "  -a             Aggregate packets in frames (%d by default)\n"
-	       "  -t             Temp folder to read message (default is current folder)\n"	       
-	       "  --verbose       display each packet, default not\n"	       
-	       "  --help          Display this help\n",
+	       "  -a             Aggregate packets in frames. 1 no aggregation, 0 no parsing only forward (%d by default) \n"
+	       "  -f             Folder for file mavlink.msg read message (default is current folder)\n"	       	    
+	       "  --temp         Inject SoC temperature into telemetry\n"
+	       "  --verbose      display each packet, default not\n"	       
+	       "  --help         Display this help\n",
 	       default_master, default_baudrate, defualt_out_addr,
 	       default_in_addr, aggregate);
 }
@@ -262,6 +265,39 @@ static bool SendInfoToGround(){
 	return true;    
 }
 
+unsigned long long get_current_time_ms() {
+    time_t current_time = time(NULL);
+    return (unsigned long long)(current_time * 1000);
+}
+
+static unsigned long LastTempSent;
+static float last_board_temp;
+
+static int SendTempToGround(unsigned char* mavbuf){
+
+	if ( abs(get_current_time_ms()-LastTempSent) < 1000)//Once a second
+		return 0;
+
+	LastTempSent = abs(get_current_time_ms());
+
+	char msg_buf[MAX_BUFFER_SIZE];
+    mavlink_message_t message;
+ 	
+    mavlink_msg_raw_imu_pack_chan(
+        system_id,
+        MAV_COMP_ID_SYSTEM_CONTROL,
+        MAVLINK_COMM_1,
+        &message,0,0,0,0,0,0,0,0,0,0,0,
+		last_board_temp*100	
+		);
+
+    uint8_t buffer[MAVLINK_MAX_PACKET_LEN];
+    const int len = mavlink_msg_to_send_buffer(mavbuf, &message);
+	//printf("temp %f sent with %d bytes",last_board_temp*100,len);		
+
+	return len;    
+}
+
 bool version_shown=false;
 static void ShowVersionOnce(mavlink_message_t* msg, uint8_t header){
 	if (version_shown)
@@ -320,10 +356,7 @@ unsigned long long get_current_time_ms2() {
     return (unsigned long long)(current_clock_ticks * 1000 / CLOCKS_PER_SEC);
 	
 }
-unsigned long long get_current_time_ms() {
-    time_t current_time = time(NULL);
-    return (unsigned long long)(current_time * 1000);
-}
+
 
 
 uint16_t channels[18];
@@ -450,6 +483,12 @@ static void process_mavlink(uint8_t* buffer, int count, void *arg){
 					mavbuff_offset=0;
 					mavpckts_count=0;
 					SendInfoToGround();
+
+					mavbuff_offset=SendTempToGround(mavbuf);
+					if (mavbuff_offset>0){
+						mavpckts_count++;
+					}
+
 				}
 			}
         }//if mavlink_parse_char
@@ -528,11 +567,63 @@ static void in_read(evutil_socket_t sock, short event, void *arg)
 	bufferevent_write(serial_bev, buf, nread);
 }
 
+
+static void* setup_temp_mem(off_t base, size_t size)
+{
+	int mem_fd;
+
+	mem_fd = open("/dev/mem", O_RDWR | O_SYNC);
+	if (mem_fd < 0) {
+		fprintf(stderr, "can't open /dev/mem\n");
+		return NULL;
+	}
+
+	char *mapped_area =
+		mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, mem_fd, base);
+	if (mapped_area == MAP_FAILED) {
+		fprintf(stderr, "read_mem_reg mmap error: %s (%d)\n",
+				strerror(errno), errno);
+		return NULL;
+	}
+
+	uint32_t MISC_CTRL45 = 0;
+
+	// Set the T-Sensor cyclic capture mode by configuring MISC_CTRL45 bit[30]
+	MISC_CTRL45 |= 1 << 30;
+
+	// Set the capture period by configuring MISC_CTRL45 bit[27:20]
+	// The formula for calculating the cyclic capture periodis as follows:
+	//	T = N x 2 (ms)
+	//	N is the value of MISC_CTRL45 bit[27:20]
+	MISC_CTRL45 |= 50 << 20;
+
+	// Enable the T-Sensor by configuring MISC_CTRL45 bit[31] and start to collect the temperature
+	MISC_CTRL45 |= 1 << 31;
+
+	*(volatile uint32_t *)(mapped_area + 0xB4) = MISC_CTRL45;
+
+	return mapped_area;
+}
+
+static void temp_read(evutil_socket_t sock, short event, void *arg)
+{
+	(void)sock;
+	(void)event;
+	char *mapped_area = arg;
+
+	uint32_t val = *(volatile uint32_t *)(mapped_area + 0xBC);
+	float tempo = val & ((1 << 16) - 1);
+        tempo = ((tempo - 117) / 798) * 165 - 40;
+
+	printf("Temp read %f C\n", tempo);
+	last_board_temp=tempo;
+}
+
 static int handle_data(const char *port_name, int baudrate,
-		       const char *out_addr, const char *in_addr)
+		       const char *out_addr, const char *in_addr, bool temp)
 {
 	struct event_base *base = NULL;
-	struct event *sig_int = NULL, *in_ev = NULL;
+	struct event *sig_int = NULL, *in_ev = NULL, *temp_tmr = NULL;
 	int ret = EXIT_SUCCESS;
 
 	int serial_fd = open(port_name, O_RDWR | O_NOCTTY);
@@ -601,9 +692,20 @@ static int handle_data(const char *port_name, int baudrate,
 	in_ev = event_new(base, in_sock, EV_READ | EV_PERSIST, in_read, NULL);
 	event_add(in_ev, NULL);
 
+	if (temp) {
+		void* mem = setup_temp_mem(0x12028000, 0xFFFF);
+		temp_tmr = event_new(base, -1, EV_PERSIST, temp_read, mem);
+		evtimer_add(temp_tmr, &(struct timeval){.tv_sec = 1});
+	}
+
 	event_base_dispatch(base);
 
 err:
+	if (temp_tmr) {
+		event_del(temp_tmr);
+		event_free(temp_tmr);
+	}
+
 	if (serial_fd >= 0)
 		close(serial_fd);
 
@@ -638,8 +740,10 @@ int main(int argc, char **argv)
 		{ "in", required_argument, NULL, 'i' },
 		{ "channels", required_argument, NULL, 'c' },
 		{ "wait_time", required_argument, NULL, 'w' },				
-		{ "tempfolder", required_argument, NULL, 't' },				
+		{ "folder", required_argument, NULL, 'f' },				
 		{ "verbose", no_argument, NULL, 'v' },		
+		{ "temp", no_argument, NULL, 't' },
+		{ "verbose", no_argument, NULL, 'v' },
 		{ "help", no_argument, NULL, 'h' },
 		{ NULL, 0, NULL, 0 }
 	};
@@ -648,6 +752,7 @@ int main(int argc, char **argv)
 	int baudrate = default_baudrate;
 	const char *out_addr = defualt_out_addr;
 	const char *in_addr = default_in_addr;
+	int temp = false;
 
 	int opt;
 	int long_index = 0;
@@ -688,8 +793,7 @@ int main(int argc, char **argv)
 			LastStart=get_current_time_ms();
 			break;
 
-		case 't':
-
+		case 'f':
 			 if (optarg != NULL) {        		
         		
         		snprintf(MavLinkMsgFile, sizeof(MavLinkMsgFile), "%smavlink.msg", optarg);
@@ -701,8 +805,13 @@ int main(int argc, char **argv)
 			LastStart=get_current_time_ms();
 			break;
 		
+		case 't':
+			temp = true;
+			break;
+
 		case 'v':
 			verbose = true;
+			printf("Verbose mode!");
 			break;			
 
 		case 'h':
@@ -712,5 +821,5 @@ int main(int argc, char **argv)
 		}
 	}
 
-	return handle_data(port_name, baudrate, out_addr, in_addr);
+	return handle_data(port_name, baudrate, out_addr, in_addr, temp);
 }

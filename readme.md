@@ -13,7 +13,8 @@ Usage: mavfwd [OPTIONS]\n"
             --channels       RC Channel to listen for commands (0 by default)
             --w             Delay after each command received(2000ms defaulr)
             --in            Remote input port (%s by default)
-            --aggregate             Aggregate Packets - [1-20] Pckt count before flush.  [50-1400] buffer size in bytes before flush)
+            --aggregate     Aggregate Packets - [1-20] Pckt count before flush.  [50-1400] buffer size in bytes before flush)
+            --tempfolder    folder where a temp file will be read, send in a mavlink message and displayed in the HUD on the ground
             --help          Display this help
 ```
 Examples :
@@ -29,3 +30,8 @@ This way the OSD will be updated with the same rate and no lag.
  -a 15 : will flush the cached messages into one UDP packet after count of message reaches 15
  -a 1024 : will flush the cached messages into one UDP packet total length of all message reaches 1024 bytes
 in both cases the buffer will be flushed if there are at least 3 packets and a MAVLINK_MSG_ID_ATTITUDE is received.
+Option to send text from the cam. A the file mavlink.msg i {tempfolder} is monitored and when found, all data from it are send as plain text message via   MAVLINK_MSG_ID_STATUSTEXT 253 to the ground station and the file is deleted.
+Sample:
+echo "Huston, this is IPC" >/tmp/mavlink.msg
+
+

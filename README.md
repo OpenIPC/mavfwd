@@ -25,7 +25,8 @@ Every time the value is changed with more than 5% the bash script channels.sh {C
 The will check the Value(usually between 1000 and 2000) and will do the tasks need - reconfigure encoder, switch IR mode, etc.
 To protect the system from overloading, the scritp will not be started again for 3000ms.
 Packets will be aggregated in chunks of 10 into one UDP frame. A MAVLINK_MSG_ID_ATTITUDE from the FC will flush the buffer. 
-This way the OSD will be updated with the same rate and no lag. 
+This way the OSD will be updated with the same rate and no lag will be added
  -a 15 : will flush the cached messages into one UDP packet after count of message reaches 15
  -a 1024 : will flush the cached messages into one UDP packet total length of all message reaches 1024 bytes
 in both cases the buffer will be flushed if there are at least 3 packets and a MAVLINK_MSG_ID_ATTITUDE is received.
+
