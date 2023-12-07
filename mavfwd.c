@@ -50,17 +50,16 @@ static void print_usage()
 {
 	printf("Usage: mavfwd [OPTIONS]\n"
 	       "Where:\n"
-	       "  --master        Local MAVLink master port (%s by default)\n"
-	       "  --baudrate      Serial port baudrate (%d by default)\n"
-	       "  --out           Remote output port (%s by default)\n"
-	       "  --in            Remote input port (%s by default)\n"
-
-	       "  --channels     RC Channel to listen for commands (0 by default) and call channels.sh\n"
-	       "  -w             Delay after each command received(2000ms defaulr)\n"
-	       "  -a             Aggregate packets in frames. 1 no aggregation, 0 no parsing only forward (%d by default) \n"
-	       "  -f             Folder for file mavlink.msg read message (default is current folder)\n"	       	    
-	       "  --temp         Inject SoC temperature into telemetry\n"
-	       "  --verbose      display each packet, default not\n"	       
+	       "  -m --master      Local MAVLink master port (%s by default)\n"
+	       "  -b --baudrate    Serial port baudrate (%d by default)\n"
+	       "  -o --out         Remote output port (%s by default)\n"
+	       "  -i --in          Remote input port (%s by default)\n"
+	       "  -c --channels    RC Channel to listen for commands (0 by default) and call channels.sh\n"
+	       "  -w --wait        Delay after each command received(2000ms defaulr)\n"
+	       "  -a --aggregate   Aggregate packets in frames (1 no aggregation, 0 no parsing only raw data forward) (%d by default) \n"
+	       "  -f --folder      Folder for file mavlink.msg (default is current folder)\n"	       	    
+	       "  -t --temp        Inject SoC temperature into telemetry\n"
+	       "  -v --verbose     Display each packet, default not\n"	       
 	       "  --help         Display this help\n",
 	       default_master, default_baudrate, defualt_out_addr,
 	       default_in_addr, aggregate);
@@ -219,8 +218,7 @@ static char MavLinkMsgFile[128]= "mavlink.msg";
 
 bool Check4MavlinkMsg(char* buffer) {
     //const char *filename = MavLinkMsgFile;//"mavlink.msg";
-
-    // Open the file for reading
+    
     FILE *file = fopen(MavLinkMsgFile, "rb");
     if (file == NULL)// No file, no problem
         return false;
@@ -240,6 +238,7 @@ bool Check4MavlinkMsg(char* buffer) {
 	return false;
 }
 static uint8_t system_id=1;
+
 static bool SendInfoToGround(){
 	char msg_buf[MAX_BUFFER_SIZE];
 	if (!Check4MavlinkMsg(&msg_buf[0]))
@@ -312,7 +311,9 @@ MAVLink 2: 0xFD
 		printf("Detected MAVLink ver: 1.0  (%d)\n",msg->magic);
 	if (header==0xFD)
 		printf("Detected MAVLink version: 2.0  (%d)\n",msg->magic);
-   
+
+	printf("System_id = %d \n",system_id);		
+
 }
 bool fc_shown=false;
 void handle_heartbeat(const mavlink_message_t* message)
@@ -327,7 +328,7 @@ void handle_heartbeat(const mavlink_message_t* message)
     printf("Flight Controller Type :");
     switch (heartbeat.autopilot) {
         case MAV_AUTOPILOT_GENERIC:
-            printf("generic/INAV");
+            printf("Generic/INAV");
             break;
         case MAV_AUTOPILOT_ARDUPILOTMEGA:
             printf("ArduPilot");
@@ -346,7 +347,7 @@ void handle_heartbeat(const mavlink_message_t* message)
 void handle_statustext(const mavlink_message_t* message)
 {	
     mavlink_statustext_t statustext;
-    mavlink_msg_statustext_decode(message, &statustext);	
+    mavlink_msg_statustext_decode(message, &statustext);		
     printf("FC message:%s", statustext.text);
 
 }
@@ -484,7 +485,8 @@ static void process_mavlink(uint8_t* buffer, int count, void *arg){
 					mavpckts_count=0;
 					SendInfoToGround();
 
-					mavbuff_offset=SendTempToGround(mavbuf);
+					if (last_board_temp>-100)
+						mavbuff_offset=SendTempToGround(mavbuf);
 					if (mavbuff_offset>0){
 						mavpckts_count++;
 					}
@@ -533,6 +535,17 @@ static void serial_read_cb(struct bufferevent *bev, void *arg)
 
 		evbuffer_drain(input, packet_len);
 	}
+}
+
+
+
+// Signal handler function
+void sendtestmsg(int signum) {
+	printf("Sending test mavlink msg.\n");
+	char buff[200];
+	sprintf(buff, "echo Hello_From_OpenIPC > %s", MavLinkMsgFile);
+	system(buff);
+	SendInfoToGround();     
 }
 
 
@@ -615,7 +628,8 @@ static void temp_read(evutil_socket_t sock, short event, void *arg)
 	float tempo = val & ((1 << 16) - 1);
         tempo = ((tempo - 117) / 798) * 165 - 40;
 
-	printf("Temp read %f C\n", tempo);
+	if (last_board_temp == -100)//only once
+		printf("Temp read %f C\n", tempo);
 	last_board_temp=tempo;
 }
 
@@ -684,6 +698,9 @@ static int handle_data(const char *port_name, int baudrate,
 	// it's recommended by libevent authors to ignore SIGPIPE
 	signal(SIGPIPE, SIG_IGN);
 
+	//Test inject a simple packet to test malvink communication Camera to Ground
+	signal(SIGUSR1, sendtestmsg);
+
 	serial_bev = bufferevent_socket_new(base, serial_fd, 0);
 	bufferevent_setcb(serial_bev, serial_read_cb, NULL, serial_event_cb,
 			  base);
@@ -742,8 +759,7 @@ int main(int argc, char **argv)
 		{ "wait_time", required_argument, NULL, 'w' },				
 		{ "folder", required_argument, NULL, 'f' },				
 		{ "verbose", no_argument, NULL, 'v' },		
-		{ "temp", no_argument, NULL, 't' },
-		{ "verbose", no_argument, NULL, 'v' },
+		{ "temp", no_argument, NULL, 't' },		
 		{ "help", no_argument, NULL, 'h' },
 		{ NULL, 0, NULL, 0 }
 	};
@@ -753,6 +769,7 @@ int main(int argc, char **argv)
 	const char *out_addr = defualt_out_addr;
 	const char *in_addr = default_in_addr;
 	int temp = false;
+	last_board_temp=-100;
 
 	int opt;
 	int long_index = 0;
@@ -805,7 +822,7 @@ int main(int argc, char **argv)
 			LastStart=get_current_time_ms();
 			break;
 		
-		case 't':
+		case 't':			
 			temp = true;
 			break;
 
@@ -819,7 +836,7 @@ int main(int argc, char **argv)
 			print_usage();
 			return EXIT_SUCCESS;
 		}
-	}
+	}	
 
 	return handle_data(port_name, baudrate, out_addr, in_addr, temp);
 }

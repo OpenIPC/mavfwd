@@ -2,14 +2,9 @@
 echo $1 $2 >>/tmp/channels.log
 
 #2000, 1725, 1575, 1425, 1275, 1000
-#  contrast: 45
-#  hue: 45
-#  saturation: 40
-#  luminance: 50
-
 # 6 position switch as defined by ELRS 
-#channel 7
-#if [ $1 -eq 7 ]; then
+# Sample for ssc338q with IMX415
+
     if [ $2 -lt 1050 ]; then
 		yaml-cli -s .image.contrast 70
 		yaml-cli -s .image.hue 50
