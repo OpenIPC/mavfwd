@@ -1,0 +1,16 @@
+
+copy to device
+scp mavfwd root@192.168.1.88:/etc/
+
+Cross compile
+cp mavfwd.c /home/home/src/openipc/output/build/mavfwd-220d30e118d26008e94445887a03d77ba73c2d29/
+make -C /home/home/src/openipc/output/ mavfwd-rebuild
+scp /home/home/src/openipc/output/build/mavfwd-220d30e118d26008e94445887a03d77ba73c2d29/mavfwd root@192.168.1.88:/usr/bin/
+
+
+mavfwd --channels 7 --master /dev/ttyAMA0 --baudrate 115200 --out 127.0.0.1:14550  -a 9 -f /tmp -t
+
+
+on desktop
+mavfwd --channels 7 --master /dev/ttyUSB0 --baudrate 115200 --out 127.0.0.1:14550  -a 9 -f /tmp -t
+
