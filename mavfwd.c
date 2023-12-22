@@ -29,9 +29,11 @@ bool verbose = false;
 const char *default_master = "/dev/ttyAMA0";
 const int default_baudrate = 115200;
 const char *defualt_out_addr = "127.0.0.1:14600";
-const char *default_in_addr = "127.0.0.1:14601";
+const char *default_in_addr =  "127.0.0.1:0";
 const int RC_CHANNELS = 65; //RC_CHANNELS ( #65 ) for regular MAVLINK RC Channels read (https://mavlink.io/en/messages/common.html#RC_CHANNELS)
 const int RC_CHANNELS_RAW = 35; //RC_CHANNELS_RAW ( #35 ) for ExpressLRS,Crossfire and other RC procotols (https://mavlink.io/en/messages/common.html#RC_CHANNELS_RAW)
+
+
 
 uint8_t ch_count = 0;
 uint16_t ch[14];
@@ -43,6 +45,7 @@ struct sockaddr_in sin_out = {
 int out_sock;
 
 long wait_after_bash=2000; //Time to wait between bash script starts.
+int ChannelPersistPeriodmMS=2000;//time needed for a RC channel value to persist to execute a commands
 
 long aggregate=1;
 
@@ -55,7 +58,8 @@ static void print_usage()
 	       "  -o --out         Remote output port (%s by default)\n"
 	       "  -i --in          Remote input port (%s by default)\n"
 	       "  -c --channels    RC Channel to listen for commands (0 by default) and call channels.sh\n"
-	       "  -w --wait        Delay after each command received(2000ms defaulr)\n"
+	       "  -w --wait        Delay after each command received(2000ms default)\n"
+		   "  -p --persist     How long a channel value must persist to generate a command - for multiposition switches (0ms default)\n"
 	       "  -a --aggregate   Aggregate packets in frames (1 no aggregation, 0 no parsing only raw data forward) (%d by default) \n"
 	       "  -f --folder      Folder for file mavlink.msg (default is current folder)\n"	       	    
 	       "  -t --temp        Inject SoC temperature into telemetry\n"
@@ -362,8 +366,13 @@ unsigned long long get_current_time_ms2() {
 
 uint16_t channels[18];
 
+//how long a RC value should stay at one level to issue a command
+
 unsigned static long LastStart=0;//get_current_time_ms();
 unsigned static long LastValue=0;
+uint16_t NewValue;
+unsigned static long NewValueStart=0;
+unsigned int ChannelCmds=0;
 
 void ProcessChannels(){
 	//ch_count , not zero based, 1 is first
@@ -375,21 +384,33 @@ void ProcessChannels(){
 		return;
 
 	val=channels[ch_count-1];
-
-	if (val==LastValue)
+	
+	if (abs(val-NewValue)>32 && ChannelPersistPeriodmMS>0){
+		//We have a new value, let us wait for it to persist
+		NewValue=val;
+		NewValueStart=get_current_time_ms();
 		return;
+	}else
+		if (abs(get_current_time_ms()-NewValueStart)<ChannelPersistPeriodmMS)		
+			return;//New value should remain "stable" for a second before being approved					
+		else{}//New value persisted for more THAN ChannelPersistPeriodmMS
+					
 
 	if (abs(val-LastValue)<32)//the change is too small
 		return;
-
+	
+	NewValue=val;
 	LastValue=val;
 	char buff[44];
     sprintf(buff, "channels.sh %d %d &", ch_count, val);
 	LastStart=get_current_time_ms();
-    system(buff);
-	
-   printf("Called channels.sh %d %d\n", ch_count, val);
 
+	if (ChannelCmds>0){//intentionally skip the first command, since when stating mavfwd it will always receive some channel value and execute the script
+    	system(buff);
+		printf("Called channels.sh %d %d\n", ch_count, val);
+	}
+	ChannelCmds++;
+	
 }
 
 void showchannels(int count){
@@ -670,7 +691,9 @@ static int handle_data(const char *port_name, int baudrate,
 	tcsetattr(serial_fd, TCSANOW, &options);
 
 	out_sock = socket(AF_INET, SOCK_DGRAM, 0);
-	int in_sock = socket(AF_INET, SOCK_DGRAM, 0);
+
+	int in_sock = 0;
+
 
 	printf("Listening on %s...\n", port_name);
 
@@ -685,11 +708,15 @@ static int handle_data(const char *port_name, int baudrate,
 			     &sin_out.sin_port))
 		goto err;
 
-	if (bind(in_sock, (struct sockaddr *)&sin_in, sizeof(sin_in))) {
+	if (sin_in.sin_port>0)
+		in_sock=socket(AF_INET, SOCK_DGRAM, 0);
+
+	if (in_sock>0 && bind(in_sock, (struct sockaddr *)&sin_in, sizeof(sin_in))) {// we may not need this
 		perror("bind()");
 		exit(EXIT_FAILURE);
 	}
-	printf("Listening on %s...\n", in_addr);
+	if(in_sock>0)
+		printf("Listening on %s...\n", in_addr);
 
 	base = event_base_new();
 
@@ -706,9 +733,10 @@ static int handle_data(const char *port_name, int baudrate,
 			  base);
 	bufferevent_enable(serial_bev, EV_READ);
 
-	in_ev = event_new(base, in_sock, EV_READ | EV_PERSIST, in_read, NULL);
-	event_add(in_ev, NULL);
-
+	if (in_sock>0){
+		in_ev = event_new(base, in_sock, EV_READ | EV_PERSIST, in_read, NULL);
+		event_add(in_ev, NULL);
+	}
 	if (temp) {
 		void* mem = setup_temp_mem(0x12028000, 0xFFFF);
 		temp_tmr = event_new(base, -1, EV_PERSIST, temp_read, mem);
@@ -722,6 +750,11 @@ err:
 		event_del(temp_tmr);
 		event_free(temp_tmr);
 	}
+	if (out_sock>0)
+		close(out_sock);
+
+	if (in_sock>0)
+		close(in_sock);
 
 	if (serial_fd >= 0)
 		close(serial_fd);
@@ -758,8 +791,9 @@ int main(int argc, char **argv)
 		{ "channels", required_argument, NULL, 'c' },
 		{ "wait_time", required_argument, NULL, 'w' },				
 		{ "folder", required_argument, NULL, 'f' },				
+		{ "persist", required_argument, NULL, 'p' },
 		{ "verbose", no_argument, NULL, 'v' },		
-		{ "temp", no_argument, NULL, 't' },		
+		{ "temp", no_argument, NULL, 't' },						
 		{ "help", no_argument, NULL, 'h' },
 		{ NULL, 0, NULL, 0 }
 	};
@@ -821,8 +855,14 @@ int main(int argc, char **argv)
 			wait_after_bash = atoi(optarg);			
 			LastStart=get_current_time_ms();
 			break;
-		
-		case 't':			
+
+		case 'p':
+			ChannelPersistPeriodmMS = atoi(optarg);			
+			LastStart=get_current_time_ms();
+			break;
+
+		case 't':		
+
 			temp = true;
 			break;
 

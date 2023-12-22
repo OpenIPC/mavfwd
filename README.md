@@ -13,6 +13,7 @@ Usage: mavfwd [OPTIONS]
 -w --wait        Delay after each command received(2000ms defaulr)
 -a --aggregate   Aggregate packets in frames (1 no aggregation, 0 no parsing only raw data forward) (%d by default) 
 -f --folder      Folder for file mavlink.msg (default is current folder)
+-p --persist     How long a channel value must persist to generate a command - for multiposition switches (0ms default)
 -t --temp        Inject SoC temperature into telemetry
 -v --verbose     Display each packet, default not       
 --help         Display this help
@@ -24,6 +25,8 @@ Will read on the first UART with baudrade 115200 and will listen for values in R
 Every time the value is changed with more than 5% the bash script ```channels.sh {Channel} {Value}`````` will be started with params.
 The script then can check the Value param (usually between 1000 and 2000) and do the tasks needed - reconfigure encoder, switch IR mode, restart WiFi, change MCS index. etc.
 To protect the system from overloading (when rotating a pot on the Tx ), the script will not be started again for 3000ms.
+-p option is useful for rotary switches, where each switch step will generate a command till the desired one is reached. In order to avoid this, the channel value must keep its value for a given period in order to be accepted, for example 1000ms. This way if you never stay more than a second on a step of the rotary switch while rotating it, only the last one will be accepted. The drawback is the delay this options adds.
+
 Packets will be aggregated in chunks of 10 into one UDP frame. A MAVLINK_MSG_ID_ATTITUDE from the FC will flush the buffer. 
 This way the OSD will be updated with the same rate and no lag will be added.
  -a 15 : will flush the cached messages into one UDP packet after count of message reaches 15

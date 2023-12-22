@@ -7,6 +7,9 @@ cp mavfwd.c /home/home/src/openipc/output/build/mavfwd-220d30e118d26008e94445887
 make -C /home/home/src/openipc/output/ mavfwd-rebuild
 scp /home/home/src/openipc/output/build/mavfwd-220d30e118d26008e94445887a03d77ba73c2d29/mavfwd root@192.168.1.88:/usr/bin/
 
+cp mavfwd.c /home/home/src/ipcssc338/openipc-firmware/output/build/mavfwd-c95613e241e03782fc6acc4780e60d8b4316a736/
+make -C /home/home/src/ipcssc338/openipc-firmware/output/ mavfwd-rebuild
+scp /home/home/src/ipcssc338/openipc-firmware/output/build/mavfwd-c95613e241e03782fc6acc4780e60d8b4316a736/mavfwd root@192.168.1.88:/usr/bin/
 
 mavfwd --channels 7 --master /dev/ttyAMA0 --baudrate 115200 --out 127.0.0.1:14550  -a 9 -f /tmp -t
 
