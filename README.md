@@ -14,7 +14,8 @@ Usage: mavfwd [OPTIONS]
 -a --aggregate   Aggregate packets in frames (1 no aggregation, 0 no parsing only raw data forward) (%d by default) 
 -f --folder      Folder for file mavlink.msg (default is current folder)
 -p --persist     How long a channel value must persist to generate a command - for multiposition switches (0ms default)
--t --temp        Inject SoC temperature into telemetry
+-t --temp        Inject SoC temperature into telemetry(HiSilicon and SigmaStart supported)
+-j --wfb         Reports wfb_tx dropped packets as Mavlink messages. wfb_tx console must be redirected to <temp>/wfb.log
 -v --verbose     Display each packet, default not       
 --help         Display this help
 ```
@@ -40,5 +41,6 @@ echo "Huston, this is IPC" >/tmp/mavlink.msg
 
 killall -usr1 mavfwd   # will send text message to ground station even no data are received in the serial port, can be used to test Camera to Ground connection.
 
-
+wfb reporting scans /tmp/wfb.log file every second and extract values from "UDP rxq overflow: 2 packets dropped" lines. wfb_tx stdout must be redirected to this file, like this : 
+wfb_tx -p ${stream} -u ${udp_port} -R 512000 -K ${keydir}/${unit}.key -B ${bandwidth} -M ${mcs_index} -S ${stbc} -L ${ldpc} -G ${guard_interval} -k ${fec_k} -n ${fec_n} -T ${pool_timeout} -i ${link_id} -f ${frame_type} ${wlan} 2>&1 | tee -a /tmp/wfb.log &
 

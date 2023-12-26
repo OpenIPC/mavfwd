@@ -13,6 +13,7 @@
 #include <stdbool.h>
 #include <termios.h>
 #include <assert.h>
+#include <time.h>
 
 #include <event2/event.h>
 #include <event2/util.h>
@@ -49,6 +50,9 @@ int ChannelPersistPeriodmMS=2000;//time needed for a RC channel value to persist
 
 long aggregate=1;
 
+static bool monitor_wfb=false;
+static int temp = false;
+
 static void print_usage()
 {
 	printf("Usage: mavfwd [OPTIONS]\n"
@@ -63,6 +67,7 @@ static void print_usage()
 	       "  -a --aggregate   Aggregate packets in frames (1 no aggregation, 0 no parsing only raw data forward) (%d by default) \n"
 	       "  -f --folder      Folder for file mavlink.msg (default is current folder)\n"	       	    
 	       "  -t --temp        Inject SoC temperature into telemetry\n"
+		   "  -d --wfb         Monitors wfb.log file and reports errors via mavlink HUD messages\n"
 	       "  -v --verbose     Display each packet, default not\n"	       
 	       "  --help         Display this help\n",
 	       default_master, default_baudrate, defualt_out_addr,
@@ -96,6 +101,15 @@ static speed_t speed_by_value(int baudrate)
 		printf("Not implemented baudrate %d\n", baudrate);
 		exit(EXIT_FAILURE);
 	}
+}
+
+uint64_t get_current_time_ms() // in milliseconds
+{
+    struct timespec ts;
+    int rc = clock_gettime(CLOCK_MONOTONIC, &ts);
+    //if (rc < 0) 
+//		return get_current_time_ms_Old();
+    return ts.tv_sec * 1000LL + ts.tv_nsec / 1000000;
 }
 
 static bool parse_host_port(const char *s, struct in_addr *out_addr,
@@ -219,6 +233,7 @@ static size_t until_first_fe(unsigned char *data, size_t len)
 #define MAX_BUFFER_SIZE 50 //Limited by mavlink
 
 static char MavLinkMsgFile[128]= "mavlink.msg";  
+static char WfbLogFile[128]= "wfb.log";  
 
 bool Check4MavlinkMsg(char* buffer) {
     //const char *filename = MavLinkMsgFile;//"mavlink.msg";
@@ -242,6 +257,92 @@ bool Check4MavlinkMsg(char* buffer) {
 	return false;
 }
 static uint8_t system_id=1;
+
+
+static unsigned long long LastWfbSent=0;
+
+/// @brief wfb_tx output should be redirected to wfb.log. Parse it and extracted dropped packets!
+/// @return 
+static bool SendWfbLogToGround(){
+	if (!monitor_wfb)
+		return false;
+	if ( abs(get_current_time_ms()-LastWfbSent) < 1000)//Once a second max
+		return false;
+
+	LastWfbSent = abs(get_current_time_ms());		
+
+	char msg_buf[200];
+
+ 	FILE *file = fopen(WfbLogFile, "r");
+    if (file == NULL) {
+		if (verbose)
+        	printf("No file %s\n",WfbLogFile);
+        return false;
+    }
+
+    char buff[200];
+    int total_dropped_packets = 0;
+
+/*
+UDP rxq overflow: 2 packets dropped
+UDP rxq overflow: 45 packets dropped
+*/
+	if (verbose)
+		printf("Parsing file: %s\n",WfbLogFile);
+	int maxlinestoparse=0;
+    // Read lines from the file and parse for dropped packets
+    while (fgets(buff, sizeof(buff), file) != NULL) {        
+		if ((maxlinestoparse++) >30){//If the file is very long, no need to struggle 
+			total_dropped_packets=9999;
+			break;
+		}
+        if (strstr(buff, "packets dropped") != NULL) { // Check if the line contains "packets dropped"            
+            char *token = strtok(buff, " ");//split by space,  Parse the line to extract the number of dropped packets
+            while (token != NULL) {
+                if (isdigit(token[0])) {
+                    int dropped_packets = atoi(token);
+                    total_dropped_packets += dropped_packets;
+                    break;
+                }
+                token = strtok(NULL, " ");
+            }
+        }
+    }
+    fclose(file);
+
+	if (maxlinestoparse==0 && total_dropped_packets==0)//file was empty
+		return;
+
+    //remove(WfbLogFile) // This will break console output in the file!    
+		
+    file = fopen(WfbLogFile, "w");// Open the file in write mode, truncating it to zero size
+    if (file != NULL) 
+    	fclose(file);   
+	     
+	
+    sprintf(msg_buf,"%d video pckts dropped!\n", total_dropped_packets);
+	printf("%s",msg_buf);
+	
+    mavlink_message_t message;
+ 	
+    mavlink_msg_statustext_pack_chan(
+        system_id,
+        MAV_COMP_ID_SYSTEM_CONTROL,
+        MAVLINK_COMM_1,
+        &message,
+		4,  	// 4 - Warning, 5 - Error
+		msg_buf,
+		0,0);
+
+    uint8_t buffer[MAVLINK_MAX_PACKET_LEN];
+    const int len = mavlink_msg_to_send_buffer(buffer, &message);
+		
+	sendto(out_sock, buffer, len, 0, (struct sockaddr *)&sin_out, sizeof(sin_out));
+
+	return true;    
+
+}
+
 
 static bool SendInfoToGround(){
 	char msg_buf[MAX_BUFFER_SIZE];
@@ -268,13 +369,44 @@ static bool SendInfoToGround(){
 	return true;    
 }
 
-unsigned long long get_current_time_ms() {
+uint64_t get_current_time_ms_Old() {
     time_t current_time = time(NULL);
-    return (unsigned long long)(current_time * 1000);
+    return (uint64_t)(current_time * 1000);
 }
 
-static unsigned long LastTempSent;
+
 static float last_board_temp;
+
+/// @brief 
+/// @return -100 if no sigmastar found 
+static int GetTempSigmaStar(){
+
+//https://wx.comake.online/doc/doc/SigmaStarDocs-SSD220-SIGMASTAR-202305231834/platform/BSP/Ikayaki/frequency_en.html
+ 	FILE *file = fopen("/sys/devices/virtual/mstar/msys/TEMP_R", "r"); //Temperature 62
+    if (file == NULL) {
+		if (verbose)
+        	printf("No temp data at %s\n",WfbLogFile);
+        return -100;
+    }
+	last_board_temp=-100;
+  	char buff[200];
+    // Read lines from the file and parse for dropped packets
+    if (fgets(buff, sizeof(buff), file) != NULL) {        	         
+        char *temperature_str = strstr(buff, "Temperature"); // Find "Temperature"
+        if (temperature_str != NULL) 
+            last_board_temp = atoi(temperature_str + 12); // Extract temperature value        
+    }
+    fclose(file);
+
+	if (verbose && last_board_temp<-90)
+        	printf("No temp data in file %s\n",WfbLogFile);
+
+	return last_board_temp;
+
+}
+
+static uint64_t LastTempSent;
+ 
 
 static int SendTempToGround(unsigned char* mavbuf){
 
@@ -282,6 +414,9 @@ static int SendTempToGround(unsigned char* mavbuf){
 		return 0;
 
 	LastTempSent = abs(get_current_time_ms());
+
+	if(temp==2)//read the temperature only once per second
+		last_board_temp=GetTempSigmaStar();
 
 	char msg_buf[MAX_BUFFER_SIZE];
     mavlink_message_t message;
@@ -356,7 +491,7 @@ void handle_statustext(const mavlink_message_t* message)
 
 }
 
-unsigned long long get_current_time_ms2() {
+unsigned long long get_current_time_ms_simple() {
     clock_t current_clock_ticks = clock();	
     return (unsigned long long)(current_clock_ticks * 1000 / CLOCKS_PER_SEC);
 	
@@ -368,46 +503,49 @@ uint16_t channels[18];
 
 //how long a RC value should stay at one level to issue a command
 
-unsigned static long LastStart=0;//get_current_time_ms();
-unsigned static long LastValue=0;
+static uint64_t LastStart=0;//
+static unsigned long LastValue=0;
 uint16_t NewValue;
-unsigned static long NewValueStart=0;
+static uint64_t NewValueStart=0;
 unsigned int ChannelCmds=0;
+static uint64_t mavpckts_ttl=0;
 
 void ProcessChannels(){
 	//ch_count , not zero based, 1 is first
 	uint16_t val=0;
-	if (ch_count<1 || ch_count>16)
+	if (ch_count<1 || ch_count>16  /* || (mavpckts_ttl<100*/ ) //wait in the beginning for the values to settle
 		return;
 
-	if ( abs(get_current_time_ms()-LastStart) < wait_after_bash)
+	if ( abs(get_current_time_ms()-LastStart) < wait_after_bash)		
 		return;
-
+	
 	val=channels[ch_count-1];
 	
 	if (abs(val-NewValue)>32 && ChannelPersistPeriodmMS>0){
 		//We have a new value, let us wait for it to persist
 		NewValue=val;
-		NewValueStart=get_current_time_ms();
+		NewValueStart=get_current_time_ms();		
 		return;
 	}else
 		if (abs(get_current_time_ms()-NewValueStart)<ChannelPersistPeriodmMS)		
 			return;//New value should remain "stable" for a second before being approved					
-		else{}//New value persisted for more THAN ChannelPersistPeriodmMS
-					
+		else{}//New value persisted for more THAN ChannelPersistPeriodmMS					
 
-	if (abs(val-LastValue)<32)//the change is too small
-		return;
+	if (abs(val-LastValue)<32)//the change is too small	
+		return;	
 	
 	NewValue=val;
 	LastValue=val;
-	char buff[44];
-    sprintf(buff, "channels.sh %d %d &", ch_count, val);
-	LastStart=get_current_time_ms();
+	
+	char buff[60];
+    sprintf(buff, "/usr/bin/channels.sh %d %d &", ch_count, val);
 
+	printf("Starting(%d): %s n",ChannelCmds,buff);
+	LastStart=get_current_time_ms();
+    
 	if (ChannelCmds>0){//intentionally skip the first command, since when stating mavfwd it will always receive some channel value and execute the script
     	system(buff);
-		printf("Called channels.sh %d %d\n", ch_count, val);
+		
 	}
 	ChannelCmds++;
 	
@@ -451,6 +589,7 @@ void handle_msg_id_rc_channels(const mavlink_message_t* message){
 unsigned char mavbuf[2048];
 unsigned int mavbuff_offset=0;
 unsigned int mavpckts_count=0;
+ 
 static void process_mavlink(uint8_t* buffer, int count, void *arg){
 
     mavlink_message_t message;
@@ -464,6 +603,7 @@ static void process_mavlink(uint8_t* buffer, int count, void *arg){
 		mavbuf[mavbuff_offset]=buffer[i];
 		mavbuff_offset++;
         if (mavlink_parse_char(MAVLINK_COMM_0, buffer[i], &message, &status) == 1) {
+			mavpckts_ttl++;
 			system_id=message.sysid;
 			ShowVersionOnce(&message, (uint8_t) buffer[0]);
 			if (verbose)
@@ -487,6 +627,7 @@ static void process_mavlink(uint8_t* buffer, int count, void *arg){
 	                //handle_statustext(&message);
                 	break;					
             }
+			 
 			mavpckts_count++;			
 			bool mustflush=false;
 			if (aggregate>0){//We will send whole packets only				
@@ -506,8 +647,13 @@ static void process_mavlink(uint8_t* buffer, int count, void *arg){
 					mavpckts_count=0;
 					SendInfoToGround();
 
-					if (last_board_temp>-100)
+					SendWfbLogToGround();
+
+
+					if (last_board_temp>-100){
+						
 						mavbuff_offset=SendTempToGround(mavbuf);
+					}
 					if (mavbuff_offset>0){
 						mavpckts_count++;
 					}
@@ -600,7 +746,7 @@ static void in_read(evutil_socket_t sock, short event, void *arg)
 
 	bufferevent_write(serial_bev, buf, nread);
 }
-
+ 
 
 static void* setup_temp_mem(off_t base, size_t size)
 {
@@ -655,7 +801,7 @@ static void temp_read(evutil_socket_t sock, short event, void *arg)
 }
 
 static int handle_data(const char *port_name, int baudrate,
-		       const char *out_addr, const char *in_addr, bool temp)
+		       const char *out_addr, const char *in_addr)
 {
 	struct event_base *base = NULL;
 	struct event *sig_int = NULL, *in_ev = NULL, *temp_tmr = NULL;
@@ -738,9 +884,14 @@ static int handle_data(const char *port_name, int baudrate,
 		event_add(in_ev, NULL);
 	}
 	if (temp) {
-		void* mem = setup_temp_mem(0x12028000, 0xFFFF);
-		temp_tmr = event_new(base, -1, EV_PERSIST, temp_read, mem);
-		evtimer_add(temp_tmr, &(struct timeval){.tv_sec = 1});
+		if (GetTempSigmaStar()>-90){
+			temp=2;//SigmaStar
+			printf("Found SigmaStart temp sensor\n");
+		}else{		//Goke/Hisilicon method
+			void* mem = setup_temp_mem(0x12028000, 0xFFFF);
+			temp_tmr = event_new(base, -1, EV_PERSIST, temp_read, mem);
+			evtimer_add(temp_tmr, &(struct timeval){.tv_sec = 1});
+		}
 	}
 
 	event_base_dispatch(base);
@@ -790,10 +941,11 @@ int main(int argc, char **argv)
 		{ "in", required_argument, NULL, 'i' },
 		{ "channels", required_argument, NULL, 'c' },
 		{ "wait_time", required_argument, NULL, 'w' },				
-		{ "folder", required_argument, NULL, 'f' },				
+		{ "folder", required_argument, NULL, 'f' },						
 		{ "persist", required_argument, NULL, 'p' },
 		{ "verbose", no_argument, NULL, 'v' },		
 		{ "temp", no_argument, NULL, 't' },						
+		{ "wfb", no_argument, NULL, 'j' },		
 		{ "help", no_argument, NULL, 'h' },
 		{ NULL, 0, NULL, 0 }
 	};
@@ -802,7 +954,7 @@ int main(int argc, char **argv)
 	int baudrate = default_baudrate;
 	const char *out_addr = defualt_out_addr;
 	const char *in_addr = default_in_addr;
-	int temp = false;
+	
 	last_board_temp=-100;
 
 	int opt;
@@ -848,6 +1000,7 @@ int main(int argc, char **argv)
 			 if (optarg != NULL) {        		
         		
         		snprintf(MavLinkMsgFile, sizeof(MavLinkMsgFile), "%smavlink.msg", optarg);
+				snprintf(WfbLogFile, sizeof(MavLinkMsgFile), "%swfb.log", optarg);
 			 }
 
 			break;
@@ -862,8 +1015,11 @@ int main(int argc, char **argv)
 			break;
 
 		case 't':		
+			temp = 1;//1  HiSilicon/Goke , 2 SigmaStar SOC
+			break;
 
-			temp = true;
+		case 'j':		
+			monitor_wfb = true;
 			break;
 
 		case 'v':
@@ -878,5 +1034,5 @@ int main(int argc, char **argv)
 		}
 	}	
 
-	return handle_data(port_name, baudrate, out_addr, in_addr, temp);
+	return handle_data(port_name, baudrate, out_addr, in_addr);
 }
