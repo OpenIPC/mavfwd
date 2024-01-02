@@ -44,3 +44,10 @@ killall -usr1 mavfwd   # will send text message to ground station even no data a
 wfb reporting scans /tmp/wfb.log file every second and extract values from "UDP rxq overflow: 2 packets dropped" lines. wfb_tx stdout must be redirected to this file, like this : 
 wfb_tx -p ${stream} -u ${udp_port} -R 512000 -K ${keydir}/${unit}.key -B ${bandwidth} -M ${mcs_index} -S ${stbc} -L ${ldpc} -G ${guard_interval} -k ${fec_k} -n ${fec_n} -T ${pool_timeout} -i ${link_id} -f ${frame_type} ${wlan} 2>&1 | tee -a /tmp/wfb.log &
 
+In order to cross-compile for a specific camera., pull OpenIPC locally and compile it for the desired chipset.
+Assuming it is compiled in ```/home/home/src/openipc```  , then mavfwd can be compiled and copied to cam with IP 192.168.1.88 like this:
+```
+cp mavfwd.c /home/home/src/openipc/output/build/mavfwd-220d30e118d26008e94445887a03d77ba73c2d29/
+make -C /home/home/src/openipc/output/ mavfwd-rebuild
+scp /home/home/src/openipc/output/build/mavfwd-220d30e118d26008e94445887a03d77ba73c2d29/mavfwd root@192.168.1.88:/usr/bin/
+```
