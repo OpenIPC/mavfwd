@@ -9,19 +9,21 @@
             "program": "${workspaceFolder}/mavfwd",
             "args": [
                 "--master",
-                "/dev/ttyUSB1",
+                "/dev/ttyUSB0",
                 "--baudrate",
                 "115200",
                 "--out",
                 "127.0.0.1:14550",
                 "--in",
-                "127.0.0.1:14551",                
+                "127.0.0.1:0",                
                 "--channel",
                 "7",
                 "-a",
-                "2",
-                "-f",
-                "/home/home/"
+                "5",
+                "-f",                
+                "/home/home/",
+                "--wfb",
+                " "
           
                 
             ],
@@ -31,6 +33,7 @@
             "externalConsole": false,
             "MIMode": "gdb",
             "miDebuggerPath": "/usr/bin/gdb",
+            
             "setupCommands": [
                 {
                     "description": "MAVLINk gdb",
@@ -42,6 +45,7 @@
             "linux": {
                 "preLaunchTask": "gcc build"
             }
+            
         }
     ]
 }
