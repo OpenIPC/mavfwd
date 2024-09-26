@@ -1,5 +1,6 @@
 #include <arpa/inet.h>
 #include <assert.h>
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
@@ -33,18 +34,19 @@ const char* default_in_addr = "127.0.0.1:0";
 const int RC_CHANNELS = 65; // RC_CHANNELS ( #65 ) for regular MAVLINK RC Channels read (https://mavlink.io/en/messages/common.html#RC_CHANNELS)
 const int RC_CHANNELS_RAW = 35; // RC_CHANNELS_RAW ( #35 ) for ExpressLRS,Crossfire and other RC procotols (https://mavlink.io/en/messages/common.html#RC_CHANNELS_RAW)
 
-uint8_t ch_count = 0;
-uint16_t ch[14];
+static uint8_t ch_count = 0;
+static uint16_t ch[14];
+static uint8_t system_id = 1;
+static unsigned long long LastWfbSent = 0;
 
 struct bufferevent* serial_bev;
 struct sockaddr_in sin_out = {
     .sin_family = AF_INET,
 };
-int out_sock;
 
+int out_sock;
 long wait_after_bash = 2000; // Time to wait between bash script starts.
 int ChannelPersistPeriodmMS = 2000; // time needed for a RC channel value to persist to execute a commands
-
 long aggregate = 1;
 
 static bool monitor_wfb = false;
@@ -61,7 +63,7 @@ static void print_usage()
            "  -c --channels    RC Channel to listen for commands (0 by default) and call channels.sh\n"
            "  -w --wait        Delay after each command received(2000ms default)\n"
            "  -p --persist     How long a channel value must persist to generate a command - for multiposition switches (0ms default)\n"
-           "  -a --aggregate   Aggregate packets in frames (1 no aggregation, 0 no parsing only raw data forward) (%d by default) \n"
+           "  -a --aggregate   Aggregate packets in frames (1 no aggregation, 0 no parsing only raw data forward) (%ld by default) \n"
            "  -f --folder      Folder for file mavlink.msg (default is current folder)\n"
            "  -t --temp        Inject SoC temperature into telemetry\n"
            "  -d --wfb         Monitors wfb.log file and reports errors via mavlink HUD messages\n"
@@ -103,9 +105,7 @@ static speed_t speed_by_value(int baudrate)
 uint64_t get_current_time_ms() // in milliseconds
 {
     struct timespec ts;
-    int rc = clock_gettime(CLOCK_MONOTONIC, &ts);
-    // if (rc < 0)
-    //		return get_current_time_ms_Old();
+    clock_gettime(CLOCK_MONOTONIC, &ts);
     return ts.tv_sec * 1000LL + ts.tv_nsec / 1000000;
 }
 
@@ -148,39 +148,62 @@ static void signal_cb(evutil_socket_t fd, short event, void* arg)
     event_base_loopbreak(base);
 }
 
+static void send_msg_to_groundstation(const char* msg_buf) {
+    mavlink_message_t message;
+    mavlink_msg_statustext_pack_chan(
+        system_id,
+        MAV_COMP_ID_SYSTEM_CONTROL,
+        MAVLINK_COMM_1,
+        &message,
+        4, // 4 - Warning, 5 - Error
+        msg_buf,
+        0, 0);
+
+    uint8_t buffer[MAVLINK_MAX_PACKET_LEN];
+    int len = mavlink_msg_to_send_buffer(buffer, &message);
+    sendto(out_sock, buffer, len, 0, (struct sockaddr*)&sin_out, sizeof(sin_out));
+}
+
 static void dump_mavlink_packet(unsigned char* data, const char* direction)
 {
     uint8_t seq;
     uint8_t sys_id;
     uint8_t comp_id;
     uint32_t msg_id;
+    char buffer[1024];
 
     if (data[0] == 0xFE) { // mavlink 1
         seq = data[2];
         sys_id = data[3];
         comp_id = data[4];
         msg_id = data[5];
-    } else { // mavlink 2
+    } else if (data[0] == 0xFD) { // mavlink 2
         seq = data[4];
         sys_id = data[5];
         comp_id = data[6];
         msg_id = data[7];
+    } else {
+        const char* gs_msg = "system call successful\n";
+        sprintf(buffer, "%s", data);
+        if (verbose)
+            printf("system call: %s\n", buffer);
+        if (!system(buffer))
+            send_msg_to_groundstation(gs_msg);
+        return;
     }
 
     if (verbose)
         printf("%s %#02x sender %d/%d\t%d\t%d\n", direction, data[0], sys_id, comp_id, seq, msg_id);
 
     uint16_t val;
-
     if ((msg_id == RC_CHANNELS || msg_id == RC_CHANNELS_RAW) && ch_count > 0) {
         uint8_t offset = 18; // 15 = 1ch;
         for (uint8_t i = 0; i < ch_count; i++) {
             val = data[offset] | (data[offset + 1] << 8);
             if (ch[i] != val) {
                 ch[i] = val;
-                char buff[44];
-                sprintf(buff, "channels.sh %d %d &", i + 5, val);
-                system(buff);
+                sprintf(buffer, "channels.sh %d %d &", i + 5, val);
+                system(buffer);
                 if (verbose)
                     printf("called channels.sh %d %d\n", i + 5, val);
             }
@@ -256,9 +279,6 @@ bool Check4MavlinkMsg(char* buffer)
 
     return false;
 }
-static uint8_t system_id = 1;
-
-static unsigned long long LastWfbSent = 0;
 
 /// @brief wfb_tx output should be redirected to wfb.log. Parse it and extracted dropped packets!
 /// @return
@@ -311,7 +331,7 @@ static bool SendWfbLogToGround()
     fclose(file);
 
     if (maxlinestoparse == 0 && total_dropped_packets == 0) // file was empty
-        return;
+        return false;
 
     // remove(WfbLogFile) // This will break console output in the file!
 
@@ -321,22 +341,7 @@ static bool SendWfbLogToGround()
 
     sprintf(msg_buf, "%d video pckts dropped!\n", total_dropped_packets);
     printf("%s", msg_buf);
-
-    mavlink_message_t message;
-
-    mavlink_msg_statustext_pack_chan(
-        system_id,
-        MAV_COMP_ID_SYSTEM_CONTROL,
-        MAVLINK_COMM_1,
-        &message,
-        4, // 4 - Warning, 5 - Error
-        msg_buf,
-        0, 0);
-
-    uint8_t buffer[MAVLINK_MAX_PACKET_LEN];
-    const int len = mavlink_msg_to_send_buffer(buffer, &message);
-
-    sendto(out_sock, buffer, len, 0, (struct sockaddr*)&sin_out, sizeof(sin_out));
+    send_msg_to_groundstation(msg_buf);
 
     return true;
 }
@@ -344,25 +349,10 @@ static bool SendWfbLogToGround()
 static bool SendInfoToGround()
 {
     char msg_buf[MAX_BUFFER_SIZE];
-    if (!Check4MavlinkMsg(&msg_buf[0]))
+    if (!Check4MavlinkMsg(msg_buf))
         return false;
 
-    // Huston, we have a message for you.
-    mavlink_message_t message;
-
-    mavlink_msg_statustext_pack_chan(
-        system_id,
-        MAV_COMP_ID_SYSTEM_CONTROL,
-        MAVLINK_COMM_1,
-        &message,
-        4, // 4 - Warning, 5 - Error
-        msg_buf,
-        0, 0);
-
-    uint8_t buffer[MAVLINK_MAX_PACKET_LEN];
-    const int len = mavlink_msg_to_send_buffer(buffer, &message);
-
-    sendto(out_sock, buffer, len, 0, (struct sockaddr*)&sin_out, sizeof(sin_out));
+    send_msg_to_groundstation(msg_buf);
 
     return true;
 }
@@ -407,7 +397,6 @@ static uint64_t LastTempSent;
 
 static int SendTempToGround(unsigned char* mavbuf)
 {
-
     if (abs(get_current_time_ms() - LastTempSent) < 1000) // Once a second
         return 0;
 
@@ -416,9 +405,7 @@ static int SendTempToGround(unsigned char* mavbuf)
     if (temp == 2) // read the temperature only once per second
         last_board_temp = GetTempSigmaStar();
 
-    char msg_buf[MAX_BUFFER_SIZE];
     mavlink_message_t message;
-
     mavlink_msg_raw_imu_pack_chan(
         system_id,
         MAV_COMP_ID_SYSTEM_CONTROL,
@@ -426,11 +413,7 @@ static int SendTempToGround(unsigned char* mavbuf)
         &message, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         last_board_temp * 100);
 
-    uint8_t buffer[MAVLINK_MAX_PACKET_LEN];
-    const int len = mavlink_msg_to_send_buffer(mavbuf, &message);
-    // printf("temp %f sent with %d bytes",last_board_temp*100,len);
-
-    return len;
+    return mavlink_msg_to_send_buffer(mavbuf, &message);
 }
 
 bool version_shown = false;
@@ -625,7 +608,6 @@ static void process_mavlink(uint8_t* buffer, int count, void* arg)
             }
 
             mavpckts_count++;
-            bool mustflush = false;
             if (aggregate > 0) { // We will send whole packets only
                 if (
                     ((aggregate >= 1 && aggregate < 50) && mavpckts_count >= aggregate) || // if packets more than treshold
@@ -679,7 +661,7 @@ static void serial_read_cb(struct bufferevent* bev, void* arg)
         ttl_bytes += packet_len;
 
         if (!version_shown && ttl_packets % 10 == 3) // If garbage only, give some feedback do diagnose
-            printf("Packets:%d  Bytes:%d\n", ttl_packets, ttl_bytes);
+            printf("Packets:%ld  Bytes:%ld\n", ttl_packets, ttl_bytes);
 
         if (aggregate == 0) {
             if (sendto(out_sock, data, packet_len, 0,
@@ -733,11 +715,10 @@ static void in_read(evutil_socket_t sock, short event, void* arg)
         event_base_loopbreak(base);
     }
 
-    assert(nread > 6);
-
-    dump_mavlink_packet(buf, "<<");
-
-    bufferevent_write(serial_bev, buf, nread);
+    if (nread > 6) {
+        dump_mavlink_packet(buf, "<<");
+        bufferevent_write(serial_bev, buf, nread);
+    }
 }
 
 static void* setup_temp_mem(off_t base, size_t size)
@@ -971,9 +952,9 @@ int main(int argc, char** argv)
             if (aggregate == 0)
                 printf("No parsing, raw UART to UDP only\n");
             else if (aggregate < 50)
-                printf("Aggregate mavlink pckts in packs of %d \n", aggregate);
+                printf("Aggregate mavlink pckts in packs of %ld\n", aggregate);
             else if (aggregate > 50)
-                printf("Aggregate mavlink pckts till buffer reaches %d bytes \n", aggregate);
+                printf("Aggregate mavlink pckts till buffer reaches %ld bytes\n", aggregate);
 
             break;
         case 'c':
@@ -981,7 +962,7 @@ int main(int argc, char** argv)
             if (ch_count == 0)
                 printf("rc_channels  monitoring disabled\n");
             else
-                printf("Monitoring RC channel %d \n", ch_count);
+                printf("Monitoring RC channel %d\n", ch_count);
 
             LastStart = get_current_time_ms();
             break;
@@ -1014,7 +995,7 @@ int main(int argc, char** argv)
 
         case 'v':
             verbose = true;
-            printf("Verbose mode!");
+            printf("Verbose mode!\n");
             break;
 
         case 'h':
