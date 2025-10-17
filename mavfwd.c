@@ -69,7 +69,7 @@ static void print_usage() {
 		"  -a --aggregate   Aggregate packets in frames (1 no aggregation, 0 raw data forward, %ld by default)\n"
 		"  -f --folder      Folder for file mavlink.msg (default is current folder)\n"
 		"  -t --temp        Inject SoC temperature into telemetry\n"
-		"  -d --wfb         Monitors wfb.log file and reports errors via mavlink HUD messages\n"
+		"  -j --wfb         Monitors wfb.log file and reports errors via mavlink HUD messages\n"
 		"  -v --verbose     Display each packet, default not\n"
 		"  --help           Display this help\n",
 		default_master, default_baudrate, default_out_addr, default_in_addr, aggregate);
