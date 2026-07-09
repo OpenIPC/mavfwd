@@ -31,7 +31,7 @@ bool verbose = false;
 const char *default_master = "/dev/ttyAMA0";
 const int default_baudrate = 115200;
 const char *default_out_addr = "127.0.0.1:14600";
-const char *default_in_addr = "127.0.0.1:0";
+const char *default_in_addr = "0.0.0.0:0";
 // RC_CHANNELS (#65) for regular MAVLINK RC Channels read (https://mavlink.io/en/messages/common.html#RC_CHANNELS)
 const int RC_CHANNELS = 65;
 // RC_CHANNELS_RAW (#35) for ExpressLRS,Crossfire and other RC procotols (https://mavlink.io/en/messages/common.html#RC_CHANNELS_RAW)
@@ -791,7 +791,7 @@ static int handle_data(
 
 	out_sock = socket(AF_INET, SOCK_DGRAM, 0);
 
-	int in_sock = 0;
+	int in_sock = out_sock;
 
 	printf("Listening on %s...\n", port_name);
 
@@ -803,9 +803,6 @@ static int handle_data(
 		goto err;
 	if (!parse_host_port(out_addr, (struct in_addr *)&sin_out.sin_addr.s_addr, &sin_out.sin_port))
 		goto err;
-
-	if (sin_in.sin_port > 0)
-		in_sock = socket(AF_INET, SOCK_DGRAM, 0);
 
 	if (in_sock > 0 &&
 		bind(in_sock, (struct sockaddr *)&sin_in, sizeof(sin_in))) { // we may not need this
