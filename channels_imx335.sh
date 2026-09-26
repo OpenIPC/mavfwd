@@ -1,5 +1,9 @@
 
 echo $1 $2 >>/tmp/channels.log
+# The 4 MP IMX335 profile. Firmware on 128 MB parts names it 4M_imx335_i2c.ini
+# (5 MP is their default); older images and 64 MB parts use imx335_i2c_4M.ini.
+imx335_4m=/etc/sensors/4M_imx335_i2c.ini
+[ -f "$imx335_4m" ] || imx335_4m=/etc/sensors/imx335_i2c_4M.ini
 # 
 # gk7205v300 IMX335 board
 # 6 position switch as defined by ELRS 
@@ -16,7 +20,7 @@ echo $1 $2 >>/tmp/channels.log
 		yaml-cli -s .video0.size 1920x1080
 		yaml-cli -s .video0.gopSize 1.5
 		yaml-cli -s .video0.fps 30
-		yaml-cli -s .isp.sensorConfig /etc/sensors/imx335_i2c_4M.ini		
+		yaml-cli -s .isp.sensorConfig "$imx335_4m"		
 		 		
 		echo "1920x1080/30fps/7Mb" >/tmp/mavlink.msg
 		
@@ -34,7 +38,7 @@ echo $1 $2 >>/tmp/channels.log
 		yaml-cli -s .video0.size 1920x1080
 		yaml-cli -s .video0.gopSize 1.5
 		yaml-cli -s .video0.fps 30
-		yaml-cli -s .isp.sensorConfig /etc/sensors/imx335_i2c_4M.ini
+		yaml-cli -s .isp.sensorConfig "$imx335_4m"
 		
 		echo "1920x1080/30fps/14Mb" >/tmp/mavlink.msg
 		
@@ -52,7 +56,7 @@ echo $1 $2 >>/tmp/channels.log
 		yaml-cli -s .video0.size 1920x1080
 		yaml-cli -s .video0.gopSize 1.5
 		yaml-cli -s .video0.fps 30
-		yaml-cli -s .isp.sensorConfig /etc/sensors/imx335_i2c_4M.ini
+		yaml-cli -s .isp.sensorConfig "$imx335_4m"
 		
 		echo "1920x1080/30fps/14Mb C:80%" >/tmp/mavlink.msg
 		
@@ -71,7 +75,7 @@ echo $1 $2 >>/tmp/channels.log
 		yaml-cli -s .video0.size 1920x1080
 		yaml-cli -s .video0.gopSize 1.5
 		yaml-cli -s .video0.fps 30
-		yaml-cli -s .isp.sensorConfig /etc/sensors/imx335_i2c_4M.ini
+		yaml-cli -s .isp.sensorConfig "$imx335_4m"
 		
 		echo "1920x1080/30fps/14Mb C:80%" >/tmp/mavlink.msg
 		
@@ -112,7 +116,7 @@ echo $1 $2 >>/tmp/channels.log
 		yaml-cli -s .video0.size 1920x1080
 		yaml-cli -s .video0.gopSize 1.5
 		yaml-cli -s .video0.fps 30
-		yaml-cli -s .isp.sensorConfig /etc/sensors/imx335_i2c_4M.ini
+		yaml-cli -s .isp.sensorConfig "$imx335_4m"
 				 		
 		echo "1920x1080/30fps/3Mb" >/tmp/mavlink.msg
 		
