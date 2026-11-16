@@ -32,13 +32,8 @@ const char *default_master = "/dev/ttyAMA0";
 const int default_baudrate = 115200;
 const char *default_out_addr = "127.0.0.1:14600";
 const char *default_in_addr = "0.0.0.0:0";
-// RC_CHANNELS (#65) for regular MAVLINK RC Channels read (https://mavlink.io/en/messages/common.html#RC_CHANNELS)
-const int RC_CHANNELS = 65;
-// RC_CHANNELS_RAW (#35) for ExpressLRS,Crossfire and other RC procotols (https://mavlink.io/en/messages/common.html#RC_CHANNELS_RAW)
-const int RC_CHANNELS_RAW = 35;
 
 static uint8_t ch_count = 0;
-static uint16_t ch[14];
 static uint8_t system_id = 1;
 static unsigned long long LastWfbSent = 0;
 
@@ -162,6 +157,19 @@ static void dump_mavlink_packet(unsigned char *data, const char *direction) {
 	uint8_t comp_id;
 	uint32_t msg_id;
 
+	// Diagnostics only. RC channel commands come from the flight controller's
+	// RC_CHANNELS / RC_CHANNELS_RAW, decoded in process_mavlink() and
+	// rate-limited in ProcessChannels(). This used to run channels.sh too,
+	// from the ground-to-air datagrams in_read() hands it: it matched only the
+	// low byte of a MAVLink 2 id (PARAM_EXT_REQUEST_LIST, 321, passed for
+	// RC_CHANNELS), used an uninitialised id when a datagram did not start on
+	// a frame, read eight "channels" from a fixed offset past the end of
+	// short datagrams, and called system() up to eight times per datagram on
+	// the event loop that also drains the UART -- and only once a GCS was
+	// talking (OpenIPC/firmware#1660).
+	if (!verbose)
+		return;
+
 	if (data[0] == 0xFE) { // mavlink 1
 		seq = data[2];
 		sys_id = data[3];
@@ -172,27 +180,12 @@ static void dump_mavlink_packet(unsigned char *data, const char *direction) {
 		sys_id = data[5];
 		comp_id = data[6];
 		msg_id = data[7];
+	} else {
+		printf("%s %#02x not on a MAVLink frame start\n", direction, data[0]);
+		return;
 	}
 
-	if (verbose)
-		printf("%s %#02x sender %d/%d\t%d\t%d\n", direction, data[0], sys_id, comp_id, seq, msg_id);
-
-	uint16_t val;
-	if ((msg_id == RC_CHANNELS || msg_id == RC_CHANNELS_RAW) && ch_count > 0) {
-		uint8_t offset = 18; // 15 = 1ch;
-		for (uint8_t i = 0; i < ch_count; i++) {
-			val = data[offset] | (data[offset + 1] << 8);
-			if (ch[i] != val) {
-				ch[i] = val;
-				char buffer[44];
-				sprintf(buffer, "channels.sh %d %d &", i + 5, val);
-				system(buffer);
-				if (verbose)
-					printf("called channels.sh %d %d\n", i + 5, val);
-			}
-			offset = offset + 2;
-		} // for
-	}	  // msg_id
+	printf("%s %#02x sender %d/%d\t%d\t%d\n", direction, data[0], sys_id, comp_id, seq, msg_id);
 }
 
 /* https://discuss.ardupilot.org/uploads/short-url/vS0JJd3BQfN9uF4DkY7bAeb6Svd.pdf
